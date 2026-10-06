@@ -68,6 +68,8 @@ The generated agent config lists this repository as the first source, restricted
 
 ### Writing a module test
 
+A module test runs once per environment the module has an input for, as parallel subtests named after the environment. Two shapes:
+
 ```go
 package test
 
@@ -83,21 +85,37 @@ import (
 	"github.com/entigolabs/entigo-infralib-test/tf"
 )
 
+// Same expectations everywhere: env.Run, branch on e where needed.
 func TestHelloWorld(t *testing.T) {
-	for _, e := range env.Selected(t) {       // every environment the module has an input for (or INFRALIB_ENVIRONMENTS)
-		t.Run(e.Name, func(t *testing.T) {
-			t.Parallel()
-			outputs := tf.Get(t, e)               // OpenTofu outputs of the step the module was applied in
-			require.NotEmpty(t, outputs.String(t, "hello-world__hello_world"))
-
-			c := k8s.Connect(t, e)                // the environment's cluster, in the module's namespace
-			k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 20, 6*time.Second)
-		})
-	}
+	env.Run(t, func(t *testing.T, e *env.Environment) {
+		outputs := tf.Get(t, e)               // OpenTofu outputs of the step the module was applied in
+		require.NotEmpty(t, outputs.String(t, "hello-world__hello_world"))
+	})
 }
+
+// Distinct expectations per environment: env.RunEach with one function each.
+// The map must cover exactly the environments the module has inputs for;
+// an input without a test or a test without an input fails the run.
+func TestHelloWorldExposure(t *testing.T) {
+	env.RunEach(t, map[string]env.TestFunc{
+		"aws_biz": testPublic,
+		"aws_pri": testInternal,
+	})
+}
+
+func testPublic(t *testing.T, e *env.Environment) {
+	c := k8s.Connect(t, e)                    // the environment's cluster, in the module's namespace
+	k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 20, 6*time.Second)
+	gateway := e.Gateway(t, "external")
+	require.NoError(t, k8s.WaitUntilHostnameAvailable(t, c, gateway, "https://"+gateway.Hostname(c.Namespace), "200", gateway.Retries, 6*time.Second))
+}
+
+func testInternal(t *testing.T, e *env.Environment) { /* ... */ }
 ```
 
 Tests never hold cloud account ids, cluster names or hostnames: those come from `environments.yaml` through `e`. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks `kube_context`.
+
+Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 4); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
 
 ## Running
 
