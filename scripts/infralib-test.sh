@@ -4,9 +4,9 @@
 # Runs the agent and the module tests of a module repository inside the
 # per-cloud test images (entigolabs/entigo-infralib-test-<cloud>). The host
 # needs bash and docker; credentials and the kubeconfig are the executor's and
-# are passed through read-only. Nothing is parsed on the host beyond the list
-# of clouds in environments.yaml: every decision is made by the infralib-test
-# command inside the image.
+# are passed through read-only. Nothing is parsed on the host beyond the
+# clouds named by the files under environments/: every decision is made by
+# the infralib-test command inside the image.
 #
 # This file ships inside the images under /opt/infralib-test/scripts and is
 # extracted by the consumer repository's test.sh (see templates/test.sh).
@@ -28,7 +28,8 @@ commands:
 
 options:
   -e, --env NAME        environment to use (repeatable). Default: every
-                        environment whose cloud has credentials in this shell
+                        environment whose cloud has credentials and region
+                        settings in this shell
       --source URL      agent source of this repository instead of the mounted
                         checkout (e.g. https://github.com/org/repo)
       --version VER     version of that source (sets force_version)
@@ -56,11 +57,17 @@ environment variables:
   INFRALIB_TEST_IMAGE_PREFIX  image name prefix (default entigolabs/entigo-infralib-test-)
   INFRALIB_AGENT_IMAGE        run the agent from this image instead of the test image
   INFRALIB_DESTROY            true = --destroy
-  AWS_*                       aws credentials/profile; ~/.aws is mounted when present
+  AWS_REGION, AWS_*           aws region (required for aws environments) and
+                              credentials/profile; ~/.aws is mounted when present
+  GOOGLE_PROJECT, GOOGLE_REGION, GOOGLE_ZONE
+                              required for google environments
   CLOUDSDK_CONFIG             gcloud configuration directory (default ~/.config/gcloud)
   GOOGLE_APPLICATION_CREDENTIALS  google service account key file
+  OCI_REGION, OCI_COMPARTMENT_ID  required for oracle environments
   OCI_CONFIG_FILE             oracle config (default ~/.oci/config); its directory is mounted
-  KUBECONFIG                  kubeconfig holding the environments' kube_context entries
+  KUBECONFIG                  kubeconfig holding the environments' cluster contexts
+                              (aws eks update-kubeconfig / gcloud container clusters
+                              get-credentials / oci ce cluster create-kubeconfig)
 USAGE
 }
 
@@ -114,8 +121,8 @@ done
 
 # ---------------------------------------------------------------- repository
 ROOT=$(pwd -P)
-while [ ! -f "$ROOT/environments.yaml" ]; do
-  [ "$ROOT" = / ] && die "no environments.yaml found in $(pwd) or its parents"
+while ! compgen -G "$ROOT/environments/*.yaml" >/dev/null; do
+  [ "$ROOT" = / ] && die "no environments/*.yaml found in $(pwd) or its parents"
   ROOT=$(dirname "$ROOT")
 done
 cd "$ROOT"
@@ -123,10 +130,10 @@ mkdir -p agents logs
 IMAGE_PREFIX="${INFRALIB_TEST_IMAGE_PREFIX:-entigolabs/entigo-infralib-test-}"
 image_for() { echo "${IMAGE_PREFIX}$1:${TAG}"; }
 
-# The clouds that appear in environments.yaml decide which images are needed.
-# This is the one piece of YAML the host looks at, and only loosely.
-mapfile -t ALL_CLOUDS < <(sed -nE 's/^[[:space:]]+cloud:[[:space:]]*"?(aws|google|oracle)"?.*/\1/p' environments.yaml | sort -u)
-[ ${#ALL_CLOUDS[@]} -gt 0 ] || die "environments.yaml names no environment with cloud: aws|google|oracle"
+# The clouds of the environment files (environments/<cloud>_<prefix>.yaml)
+# decide which images are needed. The host never reads the files themselves.
+mapfile -t ALL_CLOUDS < <(for f in environments/*.yaml; do b=$(basename "$f" .yaml); case $b in aws_*|google_*|oracle_*) echo "${b%%_*}";; esac; done | sort -u)
+[ ${#ALL_CLOUDS[@]} -gt 0 ] || die "environments/ holds no <cloud>_<prefix>.yaml (cloud aws|google|oracle)"
 
 PULLED=()
 pull() {
@@ -140,10 +147,19 @@ pull() {
 }
 
 # ---------------------------------------------------------------- credentials
-have_aws()    { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_PROFILE:-}" ] || [ -f "$HOME/.aws/credentials" ]; }
-have_google() { [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ -d "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}" ]; }
-have_oracle() { [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ]; }
+# A cloud is usable when credentials and the region settings the agent and
+# the tests read are present. Regions are never defaulted here.
+have_aws()    { { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_PROFILE:-}" ] || [ -f "$HOME/.aws/credentials" ]; } && [ -n "${AWS_REGION:-}" ]; }
+have_google() { { [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ -d "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}" ]; } && [ -n "${GOOGLE_PROJECT:-}" ] && [ -n "${GOOGLE_REGION:-}" ] && [ -n "${GOOGLE_ZONE:-}" ]; }
+have_oracle() { [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] && [ -n "${OCI_REGION:-}" ] && [ -n "${OCI_COMPARTMENT_ID:-}" ]; }
 have_cloud()  { "have_$1"; }
+require_cloud() {
+  case $1 in
+    aws)    [ -n "${AWS_REGION:-}" ] || die "AWS_REGION is not set" ;;
+    google) for v in GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE; do [ -n "${!v:-}" ] || die "$v is not set"; done ;;
+    oracle) for v in OCI_REGION OCI_COMPARTMENT_ID; do [ -n "${!v:-}" ] || die "$v is not set"; done ;;
+  esac
+}
 
 # docker run arguments shared by every container: the checkout at /conf, the
 # executor's uid so written files are theirs, and the credentials of a cloud.
@@ -162,7 +178,7 @@ base_args() {
   fi
   case $cloud in
     aws)
-      for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
+      for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
         [ -n "${!v:-}" ] && ARGS+=(-e "$v")
       done
       if [ -d "$HOME/.aws" ]; then
@@ -170,6 +186,9 @@ base_args() {
       fi
       ;;
     google)
+      # GOOGLE_* for the tests, the agent's own names alongside.
+      for v in GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
+      ARGS+=(-e "PROJECT_ID=${GOOGLE_PROJECT:-}" -e "LOCATION=${GOOGLE_REGION:-}" -e "ZONE=${GOOGLE_ZONE:-}")
       local gcloud="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
       # gcloud writes logs and token caches into its config dir, so this one is writable.
       [ -d "$gcloud" ] && ARGS+=(-v "$gcloud:/creds/gcloud" -e CLOUDSDK_CONFIG=/creds/gcloud)
@@ -178,6 +197,7 @@ base_args() {
       fi
       ;;
     oracle)
+      for v in OCI_REGION OCI_COMPARTMENT_ID OCI_PROFILE; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
       local config="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
       # The config file names its key_file by absolute path, so its directory
       # is mounted at the same path inside the container.
@@ -197,7 +217,7 @@ run_in() {
 }
 
 # ---------------------------------------------------------------- environments
-# ENV_ROWS holds "name cloud prefix region zone project compartment kube_context"
+# ENV_ROWS holds "name cloud prefix region zone project compartment cluster"
 # for every environment of the repository, read through the image.
 load_environments() {
   local cloud="${ALL_CLOUDS[0]}"
@@ -215,15 +235,11 @@ env_field() { # env_field NAME INDEX
 }
 env_cloud()  { env_field "$1" 1; }
 env_prefix() { env_field "$1" 2; }
-env_region() { env_field "$1" 3; }
-env_zone()   { env_field "$1" 4; }
-env_project(){ env_field "$1" 5; }
-env_compartment() { env_field "$1" 6; }
 
 select_environments() {
   load_environments
   if [ ${#ENVS[@]} -gt 0 ]; then
-    for e in "${ENVS[@]}"; do env_cloud "$e" >/dev/null; done
+    for e in "${ENVS[@]}"; do require_cloud "$(env_cloud "$e")"; done
     return
   fi
   local row
@@ -232,10 +248,10 @@ select_environments() {
     if have_cloud "${f[1]}"; then
       ENVS+=("${f[0]}")
     else
-      warn "Skipping ${f[0]}: no ${f[1]} credentials in this shell"
+      warn "Skipping ${f[0]}: no ${f[1]} credentials or region settings in this shell (see --help)"
     fi
   done
-  [ ${#ENVS[@]} -gt 0 ] || die "no environment selected: pass --env or provide cloud credentials"
+  [ ${#ENVS[@]} -gt 0 ] || die "no environment selected: pass --env or provide cloud credentials and region settings"
 }
 
 clouds_of_selected() {
@@ -300,19 +316,17 @@ module_source() {
 # ---------------------------------------------------------------- agent
 agent_image() { echo "${INFRALIB_AGENT_IMAGE:-$(image_for "$1")}"; }
 
-# run_agent SUBCOMMAND ENV: ei-agent run|destroy for one environment, with the
-# cloud's region/project/compartment from environments.yaml.
+# run_agent SUBCOMMAND ENV: ei-agent run|destroy for one environment. Region,
+# project and compartment reach the agent through the same variables base_args
+# passes to every container.
 run_agent() {
   local sub=$1 e=$2 cloud prefix steps
   cloud=$(env_cloud "$e"); prefix=$(env_prefix "$e")
   local var="STEPS_${e//-/_}"; steps="${!var:-all}"
   base_args "$cloud"
-  case $cloud in
-    aws)    ARGS+=(-e "AWS_REGION=$(env_region "$e")") ;;
-    google) ARGS+=(-e "PROJECT_ID=$(env_project "$e")" -e "LOCATION=$(env_region "$e")" -e "ZONE=$(env_zone "$e")")
-            [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && ARGS+=(-e "GOOGLE_APPLICATION_CREDENTIALS_JSON=$(cat "$GOOGLE_APPLICATION_CREDENTIALS")") ;;
-    oracle) ARGS+=(-e "OCI_REGION=$(env_region "$e")" -e "OCI_COMPARTMENT_ID=$(env_compartment "$e")") ;;
-  esac
+  if [ "$cloud" = google ] && [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+    ARGS+=(-e "GOOGLE_APPLICATION_CREDENTIALS_JSON=$(cat "$GOOGLE_APPLICATION_CREDENTIALS")")
+  fi
   local cmd=(ei-agent "$sub" -c "/conf/agents/$e/config.yaml" --prefix "$prefix" --pipeline-type=local --allow-parallel=false)
   [ "$steps" != all ] && cmd+=(--steps "$steps")
   mkdir -p "logs/$e"

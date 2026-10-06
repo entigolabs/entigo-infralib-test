@@ -48,7 +48,9 @@ func New(contextName, configPath, namespace string) *Client {
 
 // Connect returns a client for the environment's cluster, in the namespace of
 // the calling module's ArgoCD application (its agent module name), after
-// checking the kubeconfig can list pods there.
+// checking the kubeconfig can list pods there. The kubeconfig context is the
+// one the cloud's CLI gives the environment's cluster module, see
+// env.Config.KubeContext.
 func Connect(t logger.T, e *env.Environment) *Client {
 	t.Helper()
 	p := env.ModulePlacement(t, e)
@@ -58,16 +60,14 @@ func Connect(t logger.T, e *env.Environment) *Client {
 // ConnectNamespace is Connect for an explicit namespace.
 func ConnectNamespace(t logger.T, e *env.Environment, namespace string) *Client {
 	t.Helper()
-	if e.KubeContext == "" {
-		t.Fatalf("environment %s has no kube_context", e.Name)
-	}
-	c := &Client{Env: e, Context: e.KubeContext, Namespace: namespace}
+	context := env.MustLoad(t).KubeContext(t, e)
+	c := &Client{Env: e, Context: context, Namespace: namespace}
 	allowed, err := c.CanIE("get", "pods")
 	if err != nil {
-		t.Fatalf("unable to connect to context %s: %v", e.KubeContext, err)
+		t.Fatalf("unable to connect to context %s: %v", context, err)
 	}
 	if !allowed {
-		t.Fatalf("context %s may not get pods in namespace %s", e.KubeContext, namespace)
+		t.Fatalf("context %s may not get pods in namespace %s", context, namespace)
 	}
 	return c
 }

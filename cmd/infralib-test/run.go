@@ -45,16 +45,16 @@ type packageState struct {
 
 func runCommand(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	root := fs.String("root", "", "repository root (default: INFRALIB_ROOT or the parent holding environments.yaml)")
+	root := fs.String("root", "", "repository root (default: INFRALIB_ROOT or the parent holding environments/)")
 	var envNames stringList
-	fs.Var(&envNames, "env", "environment to test against (repeatable, default: every environment a module has an input for)")
+	fs.Var(&envNames, "env", "environment to test against (repeatable, default: every environment whose steps list a module)")
 	timeout := fs.Duration("timeout", 30*time.Minute, "go test timeout per package")
 	logDir := fs.String("log-dir", "", "directory for full per-module logs (default <root>/logs)")
 	parallel := fs.Int("parallel", 4, "packages compiled and run in parallel (go test -p)")
 	runFilter := fs.String("run", "", "regular expression passed to go test -run")
 	verbose := fs.Bool("verbose", false, "stream every test's output instead of only failures")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: infralib-test run [flags] [module dir...]\n\nModule dirs are relative to the repository root, e.g. modules/aws/vpc. Without any, every module that has a test and an input for a selected environment runs.\n\n")
+		fmt.Fprintf(fs.Output(), "usage: infralib-test run [flags] [module dir...]\n\nModule dirs are relative to the repository root, e.g. modules/aws/vpc. Without any, every module that has tests and is part of a selected environment runs.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -127,7 +127,7 @@ func runCommand(args []string) error {
 }
 
 // selectModules lists the modules to test: the given directories, or every
-// module with a *_test.go and an input file for one of the environments.
+// module with a *_test.go that a selected environment's steps list.
 func selectModules(config *env.Config, environments []*env.Environment, dirs []string) ([]env.Module, error) {
 	var candidates []env.Module
 	if len(dirs) > 0 {
@@ -143,30 +143,20 @@ func selectModules(config *env.Config, environments []*env.Environment, dirs []s
 			candidates = append(candidates, m)
 		}
 	} else {
-		types, err := os.ReadDir(filepath.Join(config.Root(), config.ModulesDir))
+		var err error
+		candidates, err = config.LocalModules()
 		if err != nil {
 			return nil, err
-		}
-		for _, t := range types {
-			if !t.IsDir() {
-				continue
-			}
-			listed, err := config.ModulesIn(filepath.Join(config.ModulesDir, t.Name()))
-			if err != nil {
-				return nil, err
-			}
-			candidates = append(candidates, listed...)
 		}
 	}
 	var modules []env.Module
 	for _, m := range candidates {
-		testDir := filepath.Join(config.Root(), m.TestDir())
-		tests, _ := filepath.Glob(filepath.Join(testDir, "*_test.go"))
+		tests, _ := filepath.Glob(filepath.Join(config.Root(), m.TestDir(), "*_test.go"))
 		if len(tests) == 0 {
 			continue
 		}
 		for _, e := range environments {
-			if e.HasModuleInput(testDir) {
+			if _, ok := config.Find(e, m.Source); ok {
 				modules = append(modules, m)
 				break
 			}

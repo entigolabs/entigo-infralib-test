@@ -24,13 +24,19 @@ import (
 func init() {
 	tf.Register(env.CloudGoogle, func(t logger.T, e *env.Environment, file string) map[string]any {
 		t.Helper()
-		return ReadJSON(t, e, Bucket(e), file)
+		return ReadJSON(t, e, Bucket(t, e), file)
+	})
+	// gcloud container clusters get-credentials names the context gke_<project>_<location>_<cluster>.
+	env.RegisterKubeContext(env.CloudGoogle, func(t logger.T, e *env.Environment, cluster string) string {
+		t.Helper()
+		return fmt.Sprintf("gke_%s_%s_%s", e.MustProject(t), e.MustRegion(t), cluster)
 	})
 }
 
 // Bucket is the agent's state bucket for the environment: <prefix>-<project>-<region>.
-func Bucket(e *env.Environment) string {
-	return fmt.Sprintf("%s-%s-%s", e.Prefix, e.Project, e.Region)
+func Bucket(t logger.T, e *env.Environment) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%s-%s", e.Prefix, e.MustProject(t), e.MustRegion(t))
 }
 
 // ReadObjectE returns the contents of a Cloud Storage object.
@@ -143,7 +149,7 @@ func DNSRecordExistsE(project, zone, recordName, recordType string) (bool, error
 func WaitUntilDNSRecordExists(t logger.T, e *env.Environment, zone, recordName, recordType string, retries int, sleepBetweenRetries time.Duration) error {
 	t.Helper()
 	_, err := retry.DoWithRetryE(t, fmt.Sprintf("Wait for DNS record %s %s in zone %s", recordType, recordName, zone), retries, sleepBetweenRetries, func() (string, error) {
-		exists, err := DNSRecordExistsE(e.Project, zone, recordName, recordType)
+		exists, err := DNSRecordExistsE(e.MustProject(t), zone, recordName, recordType)
 		if err != nil {
 			return "", err
 		}

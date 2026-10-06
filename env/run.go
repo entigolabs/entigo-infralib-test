@@ -2,13 +2,10 @@ package env
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
 )
-
-var osGetwd = os.Getwd
 
 // TestFunc is the body of a module test for one environment.
 type TestFunc func(t *testing.T, e *Environment)
@@ -34,10 +31,11 @@ func Run(t *testing.T, body TestFunc) {
 }
 
 // RunEach runs a distinct test per environment, as parallel subtests named
-// after the environment. The map must cover exactly the environments the
-// module has an input file for: an input without a test, or a test without
-// an input, fails the test, so the two cannot drift apart silently. Tests
-// for environments that are not selected (INFRALIB_ENVIRONMENTS) do not run.
+// after the environment. The map must cover exactly the environments whose
+// steps list the module: an environment without a test, or a test for an
+// environment the module is not part of, fails the test, so the two cannot
+// drift apart silently. Tests for environments that are not selected
+// (INFRALIB_ENVIRONMENTS) do not run.
 //
 //	func TestHelloWorld(t *testing.T) {
 //		env.RunEach(t, map[string]env.TestFunc{
@@ -48,7 +46,7 @@ func Run(t *testing.T, body TestFunc) {
 func RunEach(t *testing.T, tests map[string]TestFunc) {
 	t.Helper()
 	config := MustLoad(t)
-	for _, problem := range coverageProblems(config, workDir(t), tests) {
+	for _, problem := range coverageProblems(config, CurrentModule(t), tests) {
 		t.Error(problem)
 	}
 	if t.Failed() {
@@ -63,17 +61,17 @@ func RunEach(t *testing.T, tests map[string]TestFunc) {
 	}
 }
 
-// coverageProblems compares the environments a module has inputs for in dir
+// coverageProblems compares the environments whose steps list the module
 // with the ones tests covers.
-func coverageProblems(config *Config, dir string, tests map[string]TestFunc) []string {
+func coverageProblems(config *Config, m Module, tests map[string]TestFunc) []string {
 	var problems, missing, orphan []string
 	for _, e := range config.All() {
 		_, hasTest := tests[e.Name]
-		hasInput := e.HasModuleInput(dir)
+		_, isMember := config.Find(e, m.Source)
 		switch {
-		case hasInput && !hasTest:
+		case isMember && !hasTest:
 			missing = append(missing, e.Name)
-		case hasTest && !hasInput:
+		case hasTest && !isMember:
 			orphan = append(orphan, e.Name)
 		}
 	}
@@ -85,13 +83,13 @@ func coverageProblems(config *Config, dir string, tests map[string]TestFunc) []s
 	}
 	sort.Strings(unknown)
 	for _, name := range unknown {
-		problems = append(problems, fmt.Sprintf("test for unknown environment %q; %s defines %s", name, FileName, strings.Join(environmentNames(config), ", ")))
+		problems = append(problems, fmt.Sprintf("test for unknown environment %q; %s/ defines %s", name, DirName, strings.Join(environmentNames(config), ", ")))
 	}
 	if len(missing) > 0 {
-		problems = append(problems, fmt.Sprintf("no test for environments %s although the module has an input file for them", strings.Join(missing, ", ")))
+		problems = append(problems, fmt.Sprintf("no test for environments %s although their steps list the module", strings.Join(missing, ", ")))
 	}
 	if len(orphan) > 0 {
-		problems = append(problems, fmt.Sprintf("tests for environments %s although the module has no input file for them", strings.Join(orphan, ", ")))
+		problems = append(problems, fmt.Sprintf("tests for environments %s although their steps do not list the module", strings.Join(orphan, ", ")))
 	}
 	return problems
 }
@@ -102,18 +100,4 @@ func environmentNames(config *Config) []string {
 		names = append(names, e.Name)
 	}
 	return names
-}
-
-func workDir(t *testing.T) string {
-	t.Helper()
-	dir, err := osGetwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	return dir
-}
-
-// String renders the environment for log lines.
-func (e *Environment) String() string {
-	return fmt.Sprintf("%s (%s %s %s)", e.Name, e.Cloud, e.Prefix, e.Region)
 }

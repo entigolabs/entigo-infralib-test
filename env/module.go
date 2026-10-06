@@ -38,12 +38,6 @@ type Module struct {
 
 // ModuleMeta is the content of test/module.yaml.
 type ModuleMeta struct {
-	// Name overrides the agent module (and so ArgoCD app and namespace) name,
-	// which defaults to <module>-<prefix>. Charts that must live in a fixed
-	// namespace set it, e.g. crossplane-core -> crossplane-system.
-	Name string `json:"name,omitempty"`
-	// NoPrefix keeps the agent module name equal to the module name.
-	NoPrefix bool `json:"no_prefix,omitempty"`
 	// PinStep tests the module inside its regular step even when the rest of a
 	// pull request run uses a per-branch step (modules the step itself depends
 	// on, such as config-rules).
@@ -53,15 +47,14 @@ type ModuleMeta struct {
 // IsK8s reports whether the module is a Kubernetes (argocd-apps) module.
 func (m Module) IsK8s() bool { return m.Type == "k8s" }
 
-// AgentName is the module name used in the agent config for an environment.
+// AgentName is the module's name in the agent config of an environment: the
+// step entry's, or the agent's convention of <module> for terraform modules
+// and <module>-<prefix> for k8s modules.
 func (m Module) AgentName(e *Environment) string {
 	if m.Ref.Name != "" {
 		return m.Ref.Name
 	}
-	if m.Meta.Name != "" {
-		return m.Meta.Name
-	}
-	if !m.IsK8s() || m.Meta.NoPrefix {
+	if !m.IsK8s() {
 		return m.Name
 	}
 	return fmt.Sprintf("%s-%s", m.Name, e.Prefix)
@@ -76,32 +69,131 @@ func (m Module) TestDir() string {
 	return filepath.Join(m.Dir, "test")
 }
 
-// InputPath is the agent input file of the module for an environment and
-// step, relative to the repository root. A module of this repository keeps it
-// in its test directory as <env>.yaml; an external module in
-// environments/<env>/<step>/<module>.yaml unless the step entry names one.
-func (m Module) InputPath(e *Environment, step string) string {
-	if m.Ref.Input != "" {
-		return m.Ref.Input
-	}
+// InputPath is the agent input file of a module of this repository for an
+// environment, relative to the repository root: test/<env>.yaml. Empty for
+// external modules, whose inputs are inline in the step entry.
+func (m Module) InputPath(e *Environment) string {
 	if m.External {
-		return filepath.Join(InputsDir, e.Name, step, m.Name+".yaml")
+		return ""
 	}
 	return filepath.Join(m.TestDir(), e.InputFileName())
 }
 
-// HasInput reports whether the module's input file for the environment and
-// step exists in the repository.
-func (c *Config) HasInput(m Module, e *Environment, step string) bool {
-	_, err := os.Stat(filepath.Join(c.root, m.InputPath(e, step)))
-	return err == nil
+// Inputs returns the module's agent inputs for the environment: the step
+// entry's for an external module; for a module of this repository the parsed
+// test/<env>.yaml, nil when there is none or it is empty. A module of this
+// repository with inline inputs is an error, so inputs have one home.
+func (c *Config) Inputs(m Module, e *Environment) (map[string]any, error) {
+	if m.External {
+		return m.Ref.Inputs, nil
+	}
+	if len(m.Ref.Inputs) > 0 {
+		return nil, fmt.Errorf("module %s is part of this repository; put its inputs for %s in %s, not in %s", m.Source, e.Name, m.InputPath(e), e.Path)
+	}
+	data, err := os.ReadFile(filepath.Join(c.root, m.InputPath(e)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var inputs map[string]any
+	if err := yaml.Unmarshal(data, &inputs); err != nil {
+		return nil, fmt.Errorf("%s: %w", m.InputPath(e), err)
+	}
+	return inputs, nil
 }
 
-// IsMember reports whether the module takes part in the environment's step:
-// external modules always do, modules of this repository when they have an
-// input file for the environment.
-func (c *Config) IsMember(m Module, e *Environment, step string) bool {
-	return m.External || c.HasInput(m, e, step)
+// Placement is a module inside a step of an environment.
+type Placement struct {
+	Step   Step
+	Module Module
+}
+
+// Modules resolves every module of every step of the environment.
+func (c *Config) Modules(e *Environment) ([]Placement, error) {
+	var result []Placement
+	for _, step := range e.Steps {
+		for _, ref := range step.Modules {
+			m, err := c.Resolve(ref)
+			if err != nil {
+				return nil, fmt.Errorf("%s: step %s: %w", e.Path, step.Name, err)
+			}
+			result = append(result, Placement{Step: step, Module: m})
+		}
+	}
+	return result, nil
+}
+
+// Find returns where a module source sits in the environment, by its last
+// occurrence (a per-branch step is appended after the regular ones).
+func (c *Config) Find(e *Environment, source string) (Placement, bool) {
+	var result Placement
+	found := false
+	placements, err := c.Modules(e)
+	if err != nil {
+		return result, false
+	}
+	for _, p := range placements {
+		if p.Module.Source == source {
+			result, found = p, true
+		}
+	}
+	return result, found
+}
+
+// EnvironmentsOf lists the environments whose steps include the module,
+// sorted by name.
+func (c *Config) EnvironmentsOf(m Module) []*Environment {
+	var result []*Environment
+	for _, e := range c.All() {
+		if _, ok := c.Find(e, m.Source); ok {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// Well known module sources the framework derives cluster and gateway
+// information from, per cloud.
+var (
+	clusterSources = map[string]string{CloudAWS: "aws/eks", CloudGoogle: "google/gke", CloudOracle: "oracle/oke"}
+	gatewaySources = map[string]string{CloudAWS: "aws-alb", CloudGoogle: "google-gateway", CloudOracle: "oracle-gateway"}
+	dnsSources     = map[string][]string{CloudAWS: {"aws-v2/route53", "aws/route53"}, CloudGoogle: {"google/dns"}, CloudOracle: {"oracle/dns"}}
+)
+
+// ClusterModule returns the placement of the environment's Kubernetes
+// cluster module (aws/eks, google/gke or oracle/oke). The cluster is named
+// <prefix>-<step>-<module> by the agent.
+func (c *Config) ClusterModule(e *Environment) (Placement, bool) {
+	return c.Find(e, clusterSources[e.Cloud])
+}
+
+// ClusterName is the agent's name for the environment's cluster, or "" when
+// the environment has no cluster module.
+func (c *Config) ClusterName(e *Environment) string {
+	p, ok := c.ClusterModule(e)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%s-%s-%s", e.Prefix, p.Step.Name, p.Module.AgentName(e))
+}
+
+// GatewayModule returns the placement of the environment's gateway module
+// (aws-alb, google-gateway or oracle-gateway).
+func (c *Config) GatewayModule(e *Environment) (Placement, bool) {
+	return c.Find(e, gatewaySources[e.Cloud])
+}
+
+// DNSModule returns the placement of the environment's public DNS module
+// (route53 or dns).
+func (c *Config) DNSModule(e *Environment) (Placement, bool) {
+	for _, source := range dnsSources[e.Cloud] {
+		if p, ok := c.Find(e, source); ok {
+			return p, true
+		}
+	}
+	return Placement{}, false
 }
 
 // LoadModule describes the module whose directory (or test directory) is dir,
@@ -136,7 +228,7 @@ func (c *Config) ModuleBySource(source string) (Module, error) {
 	return c.Resolve(ModuleRef{Source: source})
 }
 
-// Resolve is ModuleBySource for a step entry, keeping its overrides.
+// Resolve is ModuleBySource for a step entry, keeping its name and inputs.
 func (c *Config) Resolve(ref ModuleRef) (Module, error) {
 	parts := strings.Split(ref.Source, "/")
 	var m Module
@@ -156,23 +248,31 @@ func (c *Config) Resolve(ref ModuleRef) (Module, error) {
 	return m, nil
 }
 
-// ModulesIn lists the modules of this repository under a directory relative
-// to root, in name order.
-func (c *Config) ModulesIn(dir string) ([]Module, error) {
-	entries, err := os.ReadDir(filepath.Join(c.root, dir))
+// LocalModules lists every module directory of this repository, in path order.
+func (c *Config) LocalModules() ([]Module, error) {
+	types, err := os.ReadDir(filepath.Join(c.root, c.ModulesDir))
 	if err != nil {
 		return nil, err
 	}
 	var modules []Module
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, t := range types {
+		if !t.IsDir() {
 			continue
 		}
-		m, err := c.LoadModule(filepath.Join(c.root, dir, entry.Name()))
+		entries, err := os.ReadDir(filepath.Join(c.root, c.ModulesDir, t.Name()))
 		if err != nil {
 			return nil, err
 		}
-		modules = append(modules, m)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			m, err := c.moduleAt(t.Name(), entry.Name())
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, m)
+		}
 	}
 	return modules, nil
 }

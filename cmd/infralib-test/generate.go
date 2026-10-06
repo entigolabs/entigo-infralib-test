@@ -19,7 +19,7 @@ type generateOptions struct {
 	OutDir       string
 	Environments []*env.Environment
 	// Self is the agent source of this repository; the sources of the
-	// environments file follow it and provide the external modules.
+	// environment file follow it and provide the external modules.
 	Self env.AgentSource
 	// Modules restricts the run to these module sources. Each gets a step of
 	// its own named <StepPrefix>-<module> unless it pins its regular step.
@@ -34,24 +34,24 @@ type generateOptions struct {
 type generateResult struct {
 	// Steps lists, per environment, the steps the agent should run; empty means all.
 	Steps map[string][]string
-	// Skipped lists environments no requested module has an input for.
+	// Skipped lists environments no requested module is part of.
 	Skipped []string
 }
 
 func generateCommand(args []string) error {
 	fs := flag.NewFlagSet("generate", flag.ContinueOnError)
-	root := fs.String("root", "", "repository root (default: INFRALIB_ROOT or the parent holding environments.yaml)")
+	root := fs.String("root", "", "repository root (default: INFRALIB_ROOT or the parent holding environments/)")
 	out := fs.String("out", "", "output directory (default: <root>/agents or INFRALIB_AGENTS_DIR)")
 	var envNames, modules stringList
 	fs.Var(&envNames, "env", "environment to generate for (repeatable, default all)")
-	source := fs.String("source", "/conf", "agent source url or path of this repository; the sources of "+env.FileName+" follow it")
+	source := fs.String("source", "/conf", "agent source url or path of this repository; the sources of the environment file follow it")
 	version := fs.String("version", "", "version of this repository's source")
 	forceVersion := fs.Bool("force-version", false, "set force_version on this repository's source")
 	fs.Var(&modules, "module", "only test this module source, in a step of its own (repeatable)")
 	stepPrefix := fs.String("step-prefix", "", "name prefix of per-module steps (required with -module unless -in-place)")
 	inPlace := fs.Bool("in-place", false, "with -module: apply the modules inside their regular steps instead of per-module steps")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: infralib-test generate [flags]\n\nWrites agents/<env>/config.yaml and the module inputs under agents/<env>/config/<step>/ for every selected environment, then prints one line per environment: '<env> all', '<env> <step>,<step>' or '<env> skip'.\n\n")
+		fmt.Fprintf(fs.Output(), "usage: infralib-test generate [flags]\n\nWrites agents/<env>/config.yaml for every selected environment: the environment's own agent configuration with this repository as first source, module names and the inputs of this repository's modules filled in, and per-module steps appended. Prints one line per environment: '<env> all', '<env> <step>,<step>' or '<env> skip'.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -113,7 +113,7 @@ func generateCommand(args []string) error {
 func generate(opts generateOptions) (*generateResult, error) {
 	result := &generateResult{Steps: map[string][]string{}}
 	for _, e := range opts.Environments {
-		if len(opts.Modules) > 0 && !anyModuleHasInput(opts, e) {
+		if len(opts.Modules) > 0 && !anyModuleIsMember(opts, e) {
 			result.Skipped = append(result.Skipped, e.Name)
 			continue
 		}
@@ -126,105 +126,53 @@ func generate(opts generateOptions) (*generateResult, error) {
 	return result, nil
 }
 
-func anyModuleHasInput(opts generateOptions, e *env.Environment) bool {
+func anyModuleIsMember(opts generateOptions, e *env.Environment) bool {
 	for _, m := range opts.Modules {
-		if e.HasModuleInput(filepath.Join(opts.Config.Root(), m.TestDir())) {
+		if _, ok := opts.Config.Find(e, m.Source); ok {
 			return true
 		}
 	}
 	return false
 }
 
-// generateEnvironment writes agents/<env>/config.yaml and the module inputs
-// under agents/<env>/config/<step>/<module>.yaml, and returns the steps to run
-// (nil for all).
+// generateEnvironment patches a copy of the environment's agent config and
+// writes it to agents/<env>/config.yaml. It returns the steps to run (nil
+// for all). Fields the framework does not model pass through untouched.
 func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, error) {
 	config := opts.Config
-	dir := filepath.Join(opts.OutDir, e.Name)
-	if err := os.RemoveAll(dir); err != nil {
-		return nil, err
+	raw := e.Raw()
+	rawSteps, _ := raw["steps"].([]any)
+	if len(rawSteps) != len(e.Steps) {
+		return nil, fmt.Errorf("%s: steps could not be read", e.Path)
 	}
-	agent := env.AgentConfig{EnableOpenTofu: true}
-	homes := map[string]env.Step{} // module source -> regular step
-	var local, external []string   // module sources by origin, for the source include lists
-	for _, step := range e.Steps {
-		members, err := stepModules(config, e, step)
-		if err != nil {
-			return nil, err
-		}
-		agentStep := env.AgentStep{
-			Name:                  step.Name,
-			Type:                  step.Type,
-			ManualApproveUpdate:   "never",
-			ManualApproveRun:      "never",
-			Vpc:                   step.Vpc,
-			KubernetesClusterName: step.KubernetesClusterName,
-			ArgocdNamespace:       step.ArgocdNamespace,
-		}
-		for _, m := range members {
-			homes[m.Source] = step
+
+	var local, external []string // module sources by origin, for the source include list
+	for i, step := range e.Steps {
+		rawStep, _ := rawSteps[i].(map[string]any)
+		rawModules, _ := rawStep["modules"].([]any)
+		for j, ref := range step.Modules {
+			m, err := config.Resolve(ref)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", step.Name, err)
+			}
 			if m.External {
 				external = appendUnique(external, m.Source)
 			} else {
 				local = appendUnique(local, m.Source)
 			}
-			agentStep.Modules = append(agentStep.Modules, env.AgentModule{Name: m.AgentName(e), Source: m.Source})
-			if err := copyInput(config, e, m, dir, step.Name, step.Name, m.AgentName(e)); err != nil {
-				return nil, err
-			}
-		}
-		if len(agentStep.Modules) > 0 {
-			agent.Steps = append(agent.Steps, agentStep)
-		}
-	}
-	if len(external) > 0 && len(config.Sources) == 0 {
-		return nil, fmt.Errorf("modules %s are not part of this repository; add the source that provides them under sources: in %s", strings.Join(external, ", "), env.FileName)
-	}
-
-	var runSteps []string
-	for _, m := range opts.Modules {
-		if !e.HasModuleInput(filepath.Join(config.Root(), m.TestDir())) {
-			continue
-		}
-		home, ok := homes[m.Source]
-		if !ok {
-			return nil, fmt.Errorf("module %s belongs to no step of the environment; add it to a step in %s", m.Source, env.FileName)
-		}
-		if m.Meta.PinStep || opts.InPlace {
-			runSteps = appendUnique(runSteps, home.Name)
-			continue
-		}
-		name := fmt.Sprintf("%s-%s", opts.StepPrefix, m.Name)
-		step := env.AgentStep{
-			Name:                  name,
-			Type:                  home.Type,
-			ManualApproveUpdate:   "never",
-			ManualApproveRun:      "never",
-			Vpc:                   home.Vpc,
-			KubernetesClusterName: home.KubernetesClusterName,
-			ArgocdNamespace:       home.ArgocdNamespace,
-			Modules:               []env.AgentModule{{Name: m.AgentName(e), Source: m.Source}},
-		}
-		if err := copyInput(config, e, m, dir, home.Name, name, m.AgentName(e)); err != nil {
-			return nil, err
-		}
-		// Modules the chart chains inputs from (the gateway) must be present in
-		// the step for templating to resolve, as defaults that are not applied.
-		for _, source := range home.DefaultModules {
-			d, err := config.ModuleBySource(source)
+			patched, err := agentModule(config, e, m)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("step %s: %w", step.Name, err)
 			}
-			if d.Source == m.Source || !config.IsMember(d, e, home.Name) {
-				continue
-			}
-			step.Modules = append(step.Modules, env.AgentModule{Name: d.AgentName(e), Source: d.Source, DefaultModule: true})
-			if err := copyInput(config, e, d, dir, home.Name, name, d.AgentName(e)); err != nil {
-				return nil, err
+			rawModule, _ := rawModules[j].(map[string]any)
+			rawModule["name"] = patched.Name
+			if patched.Inputs != nil {
+				rawModule["inputs"] = patched.Inputs
 			}
 		}
-		agent.Steps = append(agent.Steps, step)
-		runSteps = appendUnique(runSteps, name)
+	}
+	if len(external) > 0 && len(e.Sources) == 0 {
+		return nil, fmt.Errorf("modules %s are not part of this repository; add the source that provides them under sources: in %s", strings.Join(external, ", "), e.Path)
 	}
 
 	// This repository is the first source. When other sources provide
@@ -235,10 +183,52 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		sort.Strings(local)
 		self.Include = local
 	}
-	agent.Sources = append([]env.AgentSource{self}, config.Sources...)
+	rawSources, _ := raw["sources"].([]any)
+	raw["sources"] = append([]any{toRaw(self)}, rawSources...)
 
-	data, err := yaml.Marshal(agent)
+	// Per-module steps of a restricted run.
+	var runSteps []string
+	for _, m := range opts.Modules {
+		home, ok := config.Find(e, m.Source)
+		if !ok {
+			continue
+		}
+		if m.Meta.PinStep || opts.InPlace {
+			runSteps = appendUnique(runSteps, home.Step.Name)
+			continue
+		}
+		name := fmt.Sprintf("%s-%s", opts.StepPrefix, m.Name)
+		homeIndex := stepIndex(e, home.Step.Name)
+		rawHome, _ := rawSteps[homeIndex].(map[string]any)
+		rawStep := deepCopyMap(rawHome)
+		rawStep["name"] = name
+		own, err := agentModule(config, e, home.Module)
+		if err != nil {
+			return nil, err
+		}
+		modules := []any{toRaw(own)}
+		// The gateway module a chart chains inputs from must be present in
+		// the step for templating to resolve, as a default that is not applied.
+		if gw, ok := config.GatewayModule(e); ok && gw.Step.Name == home.Step.Name && gw.Module.Source != m.Source && home.Step.Type == env.StepTypeArgoCD {
+			def, err := agentModule(config, e, gw.Module)
+			if err != nil {
+				return nil, err
+			}
+			def.DefaultModule = true
+			modules = append(modules, toRaw(def))
+		}
+		rawStep["modules"] = modules
+		rawSteps = append(rawSteps, rawStep)
+		runSteps = appendUnique(runSteps, name)
+	}
+	raw["steps"] = rawSteps
+
+	data, err := yaml.Marshal(raw)
 	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(opts.OutDir, e.Name)
+	if err := os.RemoveAll(dir); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -250,56 +240,39 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	return runSteps, nil
 }
 
-// stepModules resolves the modules of a step that take part in the environment.
-func stepModules(config *env.Config, e *env.Environment, step env.Step) ([]env.Module, error) {
-	var candidates []env.Module
-	for _, ref := range step.Modules {
-		m, err := config.Resolve(ref)
-		if err != nil {
-			return nil, fmt.Errorf("step %s: %w", step.Name, err)
-		}
-		candidates = append(candidates, m)
+// agentModule is the agent config entry of a module in an environment, inputs included.
+func agentModule(config *env.Config, e *env.Environment, m env.Module) (env.AgentModule, error) {
+	inputs, err := config.Inputs(m, e)
+	if err != nil {
+		return env.AgentModule{}, err
 	}
-	if step.ModulesDir != "" {
-		listed, err := config.ModulesIn(step.ModulesDir)
-		if err != nil {
-			return nil, fmt.Errorf("step %s: %w", step.Name, err)
-		}
-		sort.Slice(listed, func(i, j int) bool { return listed[i].Name < listed[j].Name })
-		candidates = append(candidates, listed...)
-	}
-	var members []env.Module
-	seen := map[string]bool{}
-	for _, m := range candidates {
-		if seen[m.Source] {
-			continue
-		}
-		seen[m.Source] = true
-		if config.IsMember(m, e, step.Name) {
-			members = append(members, m)
-		}
-	}
-	return members, nil
+	return env.AgentModule{Name: m.AgentName(e), Source: m.Source, Inputs: inputs}, nil
 }
 
-// copyInput copies the module's input for the environment into the generated
-// config directory of targetStep. homeStep is the step the input is looked up
-// under (external modules keep inputs per step); a missing external input is
-// fine, the module then runs with its defaults.
-func copyInput(config *env.Config, e *env.Environment, m env.Module, dir, homeStep, targetStep, name string) error {
-	src := filepath.Join(config.Root(), m.InputPath(e, homeStep))
-	data, err := os.ReadFile(src)
-	if err != nil {
-		if m.External && os.IsNotExist(err) {
-			return nil
+func stepIndex(e *env.Environment, name string) int {
+	for i, s := range e.Steps {
+		if s.Name == name {
+			return i
 		}
-		return err
 	}
-	target := filepath.Join(dir, "config", targetStep)
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		return err
+	return -1
+}
+
+// toRaw converts a typed value into the generic map form through YAML.
+func toRaw(v any) map[string]any {
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		panic(err)
 	}
-	return os.WriteFile(filepath.Join(target, name+".yaml"), data, 0o644)
+	var m map[string]any
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		panic(err)
+	}
+	return m
+}
+
+func deepCopyMap(m map[string]any) map[string]any {
+	return toRaw(m)
 }
 
 func appendUnique(list []string, value string) []string {

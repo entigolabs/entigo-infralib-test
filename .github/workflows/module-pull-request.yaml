@@ -12,10 +12,11 @@
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-pull-request.yaml@main
 #       secrets: inherit
 #
-# Credentials come from the caller's secrets (secrets: inherit): the AWS_*,
-# GOOGLE_* and OCI_* secrets listed below; the ones that are set decide which
-# clouds' environments run. The kubeconfig for the environments' clusters is
-# built here, by the executor, from the kube_context of each environment.
+# Credentials and region settings come from the caller's secrets
+# (secrets: inherit): the AWS_*, GOOGLE_* and OCI_* secrets listed below; the
+# clouds whose secrets are set are the ones whose environments run. The
+# kubeconfig for the environments' clusters is built here, by the executor,
+# from the cluster each environment's modules define.
 name: Module pull request
 
 on:
@@ -88,9 +89,15 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      GOOGLE_PROJECT: ${{ secrets.GOOGLE_PROJECT }}
+      GOOGLE_REGION: ${{ secrets.GOOGLE_REGION }}
+      GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
       OCI_CONFIG: ${{ secrets.OCI_CONFIG }}
       OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
       INFRALIB_DESTROY: "true"
     steps:
     - uses: actions/checkout@v4
@@ -126,20 +133,20 @@ jobs:
         echo "args=${args}" >> "$GITHUB_OUTPUT"
 
     - name: Kubeconfig for the environments' clusters
-      # The executor builds the kubeconfig; the framework only picks the
-      # context named in environments.yaml. EKS and GKE are covered, OKE is
-      # left to the repository (oci ce cluster create-kubeconfig).
+      # The executor builds the kubeconfig; the framework picks the context
+      # the cloud CLI gives the environment's cluster. EKS and GKE are
+      # covered, OKE is left to the repository (oci ce cluster create-kubeconfig).
       run: |
         set -euo pipefail
-        ./test.sh envs --tsv | while IFS=$'\t' read -r name cloud prefix region zone project compartment context; do
-          [ -n "$context" ] || continue
+        ./test.sh envs --tsv | while IFS=$'\t' read -r name cloud prefix region zone project compartment cluster; do
+          [ -n "$cluster" ] || continue
           case "$cloud" in
             aws)
               [ -n "${AWS_ACCESS_KEY_ID}" ] || continue
-              AWS_REGION="$region" aws eks update-kubeconfig --region "$region" --name "${context##*/}" ;;
+              aws eks update-kubeconfig --region "${AWS_REGION}" --name "$cluster" ;;
             google)
               [ -n "${GOOGLE_CREDENTIALS}" ] || continue
-              gcloud container clusters get-credentials "${context##*_}" --region "$region" --project "$project" ;;
+              gcloud container clusters get-credentials "$cluster" --region "${GOOGLE_REGION}" --project "${GOOGLE_PROJECT}" ;;
           esac
         done
 

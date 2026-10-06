@@ -23,7 +23,23 @@ import (
 func init() {
 	tf.Register(env.CloudOracle, func(t logger.T, e *env.Environment, file string) map[string]any {
 		t.Helper()
-		return ReadJSON(t, e, Bucket(e), file)
+		return ReadJSON(t, e, Bucket(t, e), file)
+	})
+	// oci ce cluster create-kubeconfig names the context "context-c" followed
+	// by the last 11 characters of the cluster OCID, which the oke module
+	// outputs as cluster_id. Not yet verified against a real OKE kubeconfig.
+	env.RegisterKubeContext(env.CloudOracle, func(t logger.T, e *env.Environment, cluster string) string {
+		t.Helper()
+		config := env.MustLoad(t)
+		p, ok := config.ClusterModule(e)
+		if !ok {
+			t.Fatalf("environment %s has no oracle/oke module", e.Name)
+		}
+		id := tf.GetStep(t, e, p.Step.Name).String(t, p.Module.AgentName(e)+"__cluster_id")
+		if len(id) < 11 {
+			t.Fatalf("unexpected cluster id %q", id)
+		}
+		return "context-c" + id[len(id)-11:]
 	})
 }
 
@@ -51,8 +67,9 @@ func newClient(region string) (objectstorage.ObjectStorageClient, string, error)
 }
 
 // Bucket is the agent's state bucket for the environment: <prefix>-<region>.
-func Bucket(e *env.Environment) string {
-	return fmt.Sprintf("%s-%s", e.Prefix, e.Region)
+func Bucket(t logger.T, e *env.Environment) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%s", e.Prefix, e.MustRegion(t))
 }
 
 // ReadObjectE returns the contents of an object.
@@ -76,7 +93,7 @@ func ReadObjectE(region, bucket, object string) ([]byte, error) {
 // ReadJSON reads and parses a JSON object in the environment's region.
 func ReadJSON(t logger.T, e *env.Environment, bucket, object string) map[string]any {
 	t.Helper()
-	data, err := ReadObjectE(e.Region, bucket, object)
+	data, err := ReadObjectE(e.MustRegion(t), bucket, object)
 	if err != nil {
 		t.Fatalf("failed to read %s/%s in %s: %v", bucket, object, e.Region, err)
 	}

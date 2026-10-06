@@ -14,9 +14,14 @@ INFRALIB_TEST_VERSION="${INFRALIB_TEST_VERSION:-latest}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PREFIX="${INFRALIB_TEST_IMAGE_PREFIX:-entigolabs/entigo-infralib-test-}"
-# Any cloud image carries the scripts; take the first cloud the repository uses.
-CLOUD=$(sed -nE 's/^[[:space:]]+cloud:[[:space:]]*"?(aws|google|oracle)"?.*/\1/p' "$ROOT/environments.yaml" | head -n1)
-[ -n "$CLOUD" ] || { echo "environments.yaml names no environment with cloud: aws|google|oracle" >&2; exit 1; }
+# Any cloud image carries the scripts; take the first cloud the repository
+# uses, from the environment file names (environments/<cloud>_<prefix>.yaml).
+CLOUD=""
+for f in "$ROOT"/environments/*.yaml; do
+  b=$(basename "$f" .yaml)
+  case $b in aws_*|google_*|oracle_*) CLOUD=${b%%_*}; break ;; esac
+done
+[ -n "$CLOUD" ] || { echo "environments/ holds no <cloud>_<prefix>.yaml (cloud aws|google|oracle)" >&2; exit 1; }
 IMAGE="${PREFIX}${CLOUD}:${INFRALIB_TEST_VERSION}"
 CACHE="$ROOT/.infralib-test/scripts-${INFRALIB_TEST_VERSION}"
 

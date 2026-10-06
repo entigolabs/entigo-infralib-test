@@ -32,6 +32,11 @@ func init() {
 		t.Helper()
 		return ReadJSON(t, e, Bucket(t, e), file)
 	})
+	// aws eks update-kubeconfig names the context after the cluster ARN.
+	env.RegisterKubeContext(env.CloudAWS, func(t logger.T, e *env.Environment, cluster string) string {
+		t.Helper()
+		return fmt.Sprintf("arn:aws:eks:%s:%s:cluster/%s", e.MustRegion(t), AccountID(t, e), cluster)
+	})
 }
 
 var (
@@ -54,13 +59,10 @@ func ConfigE(region string) (awssdk.Config, error) {
 	return config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
 }
 
-// AccountID returns the environment's account id: the configured one, or the
-// caller identity of the current credentials (cached per region).
+// AccountID returns the account id of the current credentials (cached per region).
 func AccountID(t logger.T, e *env.Environment) string {
 	t.Helper()
-	if e.Account != "" {
-		return e.Account
-	}
+	e.MustRegion(t)
 	accountMu.Lock()
 	defer accountMu.Unlock()
 	if id, ok := accounts[e.Region]; ok {
@@ -77,7 +79,7 @@ func AccountID(t logger.T, e *env.Environment) string {
 // Bucket is the agent's state bucket for the environment: <prefix>-<account>-<region>.
 func Bucket(t logger.T, e *env.Environment) string {
 	t.Helper()
-	return fmt.Sprintf("%s-%s-%s", e.Prefix, AccountID(t, e), e.Region)
+	return fmt.Sprintf("%s-%s-%s", e.Prefix, AccountID(t, e), e.MustRegion(t))
 }
 
 // ReadObjectE returns the contents of an S3 object.
@@ -100,7 +102,7 @@ func ReadObjectE(region, bucket, key string) ([]byte, error) {
 // ReadJSON reads and parses a JSON object from the environment's region.
 func ReadJSON(t logger.T, e *env.Environment, bucket, key string) map[string]any {
 	t.Helper()
-	data, err := ReadObjectE(e.Region, bucket, key)
+	data, err := ReadObjectE(e.MustRegion(t), bucket, key)
 	if err != nil {
 		t.Fatalf("failed to read s3://%s/%s in %s: %v", bucket, key, e.Region, err)
 	}

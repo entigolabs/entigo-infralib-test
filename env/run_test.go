@@ -10,21 +10,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// repo writes a repository with two environments and a module whose test
-// directory holds an input for the given environments, then chdirs into it.
-func repo(t *testing.T, inputs ...string) {
+// repo writes a repository with two environments, a local module aws/hello
+// listed in the given environments, then chdirs into its test directory.
+func repo(t *testing.T, listedIn ...string) {
 	t.Helper()
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, FileName), []byte(`
-environments:
-  aws_biz: {cloud: aws, prefix: biz, region: eu-north-1}
-  aws_pri: {cloud: aws, prefix: pri, region: eu-north-1}
-`), 0o644))
+	for _, name := range []string{"aws_biz", "aws_pri"} {
+		content := "steps:\n  - name: net\n    modules:\n      - source: aws/vpc\n"
+		for _, l := range listedIn {
+			if l == name {
+				content += "      - source: aws/hello\n"
+			}
+		}
+		writeEnv(t, root, name, content)
+	}
 	test := filepath.Join(root, "modules", "aws", "hello", "test")
 	require.NoError(t, os.MkdirAll(test, 0o755))
-	for _, e := range inputs {
-		require.NoError(t, os.WriteFile(filepath.Join(test, e+".yaml"), nil, 0o644))
-	}
 	t.Setenv(RootEnv, root)
 	t.Setenv(SelectedEnv, "")
 	t.Chdir(test)
@@ -64,17 +65,16 @@ func TestRunEachSelection(t *testing.T) {
 func TestRunEachDrift(t *testing.T) {
 	repo(t, "aws_biz")
 	config := MustLoad(t)
-	dir, err := os.Getwd()
-	require.NoError(t, err)
+	m := CurrentModule(t)
 	none := func(*testing.T, *Environment) {}
-	// An input without a test, a test without an input, and a test for an
-	// environment that does not exist are all reported.
-	problems := coverageProblems(config, dir, map[string]TestFunc{"aws_pri": none, "google_biz": none})
+	// A listed environment without a test, a test for an environment that does
+	// not list the module, and a test for an unknown environment are all reported.
+	problems := coverageProblems(config, m, map[string]TestFunc{"aws_pri": none, "google_biz": none})
 	require.Len(t, problems, 3)
 	require.Contains(t, problems[0], `unknown environment "google_biz"`)
 	require.Contains(t, problems[1], "no test for environments aws_biz")
 	require.Contains(t, problems[2], "tests for environments aws_pri")
-	require.Empty(t, coverageProblems(config, dir, map[string]TestFunc{"aws_biz": none}))
+	require.Empty(t, coverageProblems(config, m, map[string]TestFunc{"aws_biz": none}))
 }
 
 func TestRunSameBody(t *testing.T) {
@@ -84,4 +84,13 @@ func TestRunSameBody(t *testing.T) {
 		Run(t, func(t *testing.T, e *Environment) { seen = append(seen, e.Prefix) })
 	})
 	require.ElementsMatch(t, []string{"biz", "pri"}, seen)
+}
+
+func TestSelectedSkipsUnlisted(t *testing.T) {
+	repo(t) // hello is listed nowhere
+	ok := t.Run("inner", func(t *testing.T) {
+		Selected(t)
+		t.Fatal("must have skipped")
+	})
+	require.True(t, ok, "a skipped subtest passes")
 }

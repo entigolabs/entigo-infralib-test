@@ -5,7 +5,7 @@ Test and release framework for repositories of [Entigo Infralib](https://github.
 A module repository keeps its tests as ordinary Go tests next to each module. This repository provides
 
 - the Go packages those tests import (`env`, `tf`, `k8s`, `aws`, `google`, `oracle`, `retry`, `random`, `logger`),
-- `infralib-test`, the command that turns `environments.yaml` into agent configurations and runs the module tests with readable output,
+- `infralib-test`, the command that turns the agent configurations under `environments/` into runnable ones and runs the module tests with readable output,
 - per-cloud container images `entigolabs/entigo-infralib-test-{aws,google,oracle}` that hold the agent, the cloud tooling, a Go toolchain and warmed caches,
 - a host orchestrator (`scripts/infralib-test.sh`) that runs the agent and the tests from those images with nothing but bash and docker on the host,
 - reusable GitHub workflows a module repository calls.
@@ -19,53 +19,58 @@ Scaffolding. Nothing here has run against a cloud yet. See [Roadmap](#roadmap).
 ## How a module repository is laid out
 
 ```
-environments.yaml                 the environments the repository provisions and tests on
-environments/<env>/<step>/<m>.yaml agent inputs of modules that come from another source
-go.mod                            requires github.com/entigolabs/entigo-infralib-test
-test.sh                           copy of templates/test.sh, pins the framework version
-modules/<type>/<name>/            a module: aws/vpc, aws-v2/route53, google/gke, k8s/argocd ...
-modules/<type>/<name>/test.sh     copy of templates/module-test.sh: tests this module from its directory
+environments/<cloud>_<prefix>.yaml   one agent configuration per environment
+go.mod                               requires github.com/entigolabs/entigo-infralib-test
+test.sh                              copy of templates/test.sh, pins the framework version
+modules/<type>/<name>/               a module: aws/vpc, aws-v2/route53, google/gke, k8s/argocd ...
+modules/<type>/<name>/test.sh        copy of templates/module-test.sh: tests this module from its directory
 modules/<type>/<name>/test/
-    <env>.yaml                    agent input of the module for that environment; its presence
-                                  is what puts the module into the environment
-    *_test.go                     the module's tests
-    module.yaml                   optional: name override, no_prefix, pin_step
+    <env>.yaml                       agent inputs of the module in that environment (optional)
+    *_test.go                        the module's tests
+    module.yaml                      optional: pin_step
 ```
 
-### environments.yaml
+### environments/
+
+Each file is an ordinary [entigo-infralib-agent](https://github.com/entigolabs/entigo-infralib-agent) `config.yaml`. The file name carries what the agent takes from its flags: `aws_biz.yaml` is cloud `aws`, prefix `biz`. The framework adds nothing to the format. Before a run it patches a copy:
+
+- the repository itself becomes the first source, restricted with `include:` to the modules it holds, so the agent takes everything else from the file's own `sources:`;
+- modules without a `name` get the agent's conventional one, `<module>` for terraform modules and `<module>-<prefix>` for k8s modules;
+- modules of this repository get the inputs of their `test/<env>.yaml`;
+- in a pull request, the modules under test are appended as steps of their own.
+
+Everything else passes through untouched, so a new agent field needs no framework change.
 
 ```yaml
-sources:                                   # agent sources that provide the modules this repository lacks
+sources:
   - url: https://github.com/entigolabs/entigo-infralib-release
-environments:
-  aws_demo:
-    cloud: aws                             # aws | google | oracle
-    prefix: demo                           # agent prefix; names the state bucket and every resource
-    region: eu-north-1
-    kube_context: arn:aws:eks:eu-north-1:123456789012:cluster/demo-infra-eks
-    gateways:
-      external: {name: external, namespace: aws-alb-demo, domain: demo-net-route53.example.com}
-    steps:
-      - name: net
-        modules: [aws/vpc, aws-v2/route53, aws/hello-world]
-      - name: infra
-        vpc: {attach: true}
-        modules: [aws/eks]
-      - name: apps
-        type: argocd-apps
-        argocd_namespace: argocd-demo
-        default_modules: [aws-alb]         # charts chain inputs from these; copied into per-module steps as defaults
-        modules:
-          - argocd
-          - aws-alb
-          - source: crossplane-core
-            name: crossplane-system        # agent module name override (object form)
-        modules_dir: modules/k8s           # plus every local k8s module with an input for the environment
+steps:
+  - name: net
+    type: terraform
+    modules:
+      - name: vpc                       # not in this repository: comes from the sources above
+        source: aws/vpc
+        inputs:
+          vpc_cidr: "10.0.0.0/16"
+      - source: aws-v2/route53
+      - source: aws/hello-world         # of this repository: inputs from modules/aws/hello-world/test/aws_biz.yaml
+  - name: infra
+    type: terraform
+    vpc: {attach: true}
+    modules:
+      - source: aws/eks
+  - name: apps
+    type: argocd-apps
+    argocd_namespace: argocd-biz
+    modules:
+      - source: argocd                  # name defaults to argocd-biz
+      - source: aws-alb
+      - source: hello-world
 ```
 
-A step lists modules by their agent source. A module **of this repository** (a directory under `modules/`) is part of the environment when `modules/<type>/<name>/test/<env>.yaml` exists. A module **this repository does not have** is external: it is always part of the step, the agent fetches it from the first of `sources:` that provides it, and its optional input lives in `environments/<env>/<step>/<name>.yaml`. That is how a repository with one chart gets a whole platform to test it on.
+A module of this repository is part of an environment when a step lists it. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
 
-The generated agent config lists this repository as the first source, restricted with `include:` to its own modules, followed by `sources:`.
+What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke` or `oracle/oke` module, named `<prefix>-<step>-<module>` by the agent, and its kubeconfig context is the one the cloud CLI gives it (`aws eks update-kubeconfig`, `gcloud container clusters get-credentials`, `oci ce cluster create-kubeconfig`). The gateway to publish through is the `aws-alb`, `google-gateway` or `oracle-gateway` module: its agent name is the namespace, its `global.externalGateway` input (or the chart default) the gateway name, and the `pub_domain` output of the `route53` or `dns` module the domain.
 
 ### Writing a module test
 
@@ -107,14 +112,14 @@ func TestHelloWorldExposure(t *testing.T) {
 func testPublic(t *testing.T, e *env.Environment) {
 	c := k8s.Connect(t, e)                    // the environment's cluster, in the module's namespace
 	k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 20, 6*time.Second)
-	gateway := e.Gateway(t, "external")
+	gateway := k8s.Gateway(t, e, "external")   // derived from the aws-alb and route53 modules
 	require.NoError(t, k8s.WaitUntilHostnameAvailable(t, c, gateway, "https://"+gateway.Hostname(c.Namespace), "200", gateway.Retries, 6*time.Second))
 }
 
 func testInternal(t *testing.T, e *env.Environment) { /* ... */ }
 ```
 
-Tests never hold cloud account ids, cluster names or hostnames: those come from `environments.yaml` through `e`. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks `kube_context`.
+Tests never hold cloud account ids, cluster names or hostnames: those are derived from the environment's modules. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks the context.
 
 Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 4); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
 
@@ -133,7 +138,7 @@ modules/k8s/hello-world/test.sh        the same, from the module's directory (te
 `test.sh` is a 30-line bootstrap committed in the module repository (`templates/test.sh`). It pins `INFRALIB_TEST_VERSION`, extracts `scripts/` from the matching image into the git-ignored `.infralib-test/` and runs the orchestrator, which
 
 1. reads the environments through `infralib-test envs` in the image,
-2. selects the environments: the ones given with `--env`, otherwise every environment whose cloud has credentials in the shell,
+2. selects the environments: the ones given with `--env`, otherwise every environment whose cloud has credentials and region settings in the shell,
 3. writes `agents/<env>/config.yaml` with `infralib-test generate`,
 4. runs `ei-agent run --pipeline-type=local` once per environment in parallel from the per-cloud image, with the checkout mounted at `/conf` as the repository's own source,
 5. runs `infralib-test run`, which executes `go test -json` for the selected modules and prints one line per test, a failed test's full output, and a summary; full logs go to `logs/`.
@@ -150,7 +155,7 @@ Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Im
 
 ## Workflows for module repositories
 
-- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time in per-branch steps, builds the kubeconfig for EKS and GKE from `kube_context`, destroys the steps afterwards, uploads `logs/`. Credentials via `secrets: inherit`.
+- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time in per-branch steps, builds the kubeconfig for EKS and GKE from each environment's cluster module, destroys the steps afterwards, uploads `logs/`. Credentials and regions via `secrets: inherit` (`AWS_REGION`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`, `OCI_REGION`, `OCI_COMPARTMENT_ID` beside the credential secrets).
 
 ## Roadmap
 
