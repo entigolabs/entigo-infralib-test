@@ -1,0 +1,155 @@
+# Reusable workflow for module repositories: test the modules a pull request
+# changed, one at a time, each in a step of its own on the shared
+# environments, and destroy those steps afterwards.
+#
+# In the module repository:
+#
+#   on:
+#     pull_request:
+#       paths: ['modules/**']
+#   jobs:
+#     test:
+#       uses: entigolabs/entigo-infralib-test/.github/workflows/module-pull-request.yaml@main
+#       secrets: inherit
+#
+# Credentials come from the caller's secrets (secrets: inherit): the AWS_*,
+# GOOGLE_* and OCI_* secrets listed below; the ones that are set decide which
+# clouds' environments run. The kubeconfig for the environments' clusters is
+# built here, by the executor, from the kube_context of each environment.
+name: Module pull request
+
+on:
+  workflow_call:
+    inputs:
+      modules:
+        description: JSON list of module directories to test; empty means the ones the pull request changed
+        type: string
+        default: ''
+      environments:
+        description: comma separated environments to use; empty means every environment with credentials
+        type: string
+        default: ''
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  detect:
+    name: Detect changed modules
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      any: ${{ steps.set.outputs.any }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Changed files
+      id: changed
+      if: inputs.modules == '' && github.event_name == 'pull_request'
+      uses: tj-actions/changed-files@v45
+      with:
+        base_sha: ${{ github.event.pull_request.base.sha }}
+        sha: ${{ github.event.pull_request.head.sha }}
+    - name: Build matrix
+      id: set
+      env:
+        INPUT_MODULES: ${{ inputs.modules }}
+        CHANGED: ${{ steps.changed.outputs.all_changed_files }} ${{ steps.changed.outputs.deleted_files }}
+      run: |
+        set -euo pipefail
+        if [ -n "${INPUT_MODULES}" ]; then
+          modules="${INPUT_MODULES}"
+        else
+          # A module is a directory modules/<type>/<name> that still exists and
+          # has tests; files directly under modules/<type> and deleted modules drop out.
+          modules=$(for f in ${CHANGED}; do
+              case "$f" in modules/*/*/*) echo "$f" | cut -d/ -f1-3 ;; esac
+            done | sort -u | while read -r m; do
+              ls "$m"/test/*_test.go >/dev/null 2>&1 && echo "$m"
+            done | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        fi
+        echo "Modules: ${modules}"
+        if [ -z "${modules}" ] || [ "${modules}" = "[]" ]; then
+          echo "any=false" >> "$GITHUB_OUTPUT"; echo 'matrix={"module":[]}' >> "$GITHUB_OUTPUT"
+        else
+          echo "any=true" >> "$GITHUB_OUTPUT"; echo "matrix={\"module\":${modules}}" >> "$GITHUB_OUTPUT"
+        fi
+
+  test:
+    name: ${{ matrix.module }}
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      max-parallel: 1
+      fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      OCI_CONFIG: ${{ secrets.OCI_CONFIG }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      INFRALIB_DESTROY: "true"
+    steps:
+    - uses: actions/checkout@v4
+    - name: Wait for other runs on the shared environments
+      uses: softprops/turnstyle@v3
+      with:
+        abort-after-seconds: 3600
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Google credentials
+      if: env.GOOGLE_CREDENTIALS != ''
+      run: |
+        echo "${GOOGLE_CREDENTIALS}" > "${RUNNER_TEMP}/google.json"
+        echo "GOOGLE_APPLICATION_CREDENTIALS=${RUNNER_TEMP}/google.json" >> "$GITHUB_ENV"
+        gcloud auth activate-service-account --key-file "${RUNNER_TEMP}/google.json" --quiet
+    - name: Oracle credentials
+      if: env.OCI_CONFIG != ''
+      run: |
+        mkdir -p ~/.oci
+        echo "${OCI_CONFIG}" > ~/.oci/config
+        echo "${OCI_PRIVATE_KEY}" > ~/.oci/oci_api_key.pem
+        chmod 600 ~/.oci/config ~/.oci/oci_api_key.pem
+
+    - name: Environment selection
+      id: envs
+      env:
+        ENVIRONMENTS: ${{ inputs.environments }}
+      run: |
+        args=""
+        IFS=, read -r -a envs <<<"${ENVIRONMENTS}"
+        for e in "${envs[@]}"; do [ -n "$e" ] && args="$args --env $e"; done
+        echo "args=${args}" >> "$GITHUB_OUTPUT"
+
+    - name: Kubeconfig for the environments' clusters
+      # The executor builds the kubeconfig; the framework only picks the
+      # context named in environments.yaml. EKS and GKE are covered, OKE is
+      # left to the repository (oci ce cluster create-kubeconfig).
+      run: |
+        set -euo pipefail
+        ./test.sh envs --tsv | while IFS=$'\t' read -r name cloud prefix region zone project compartment context; do
+          [ -n "$context" ] || continue
+          case "$cloud" in
+            aws)
+              [ -n "${AWS_ACCESS_KEY_ID}" ] || continue
+              AWS_REGION="$region" aws eks update-kubeconfig --region "$region" --name "${context##*/}" ;;
+            google)
+              [ -n "${GOOGLE_CREDENTIALS}" ] || continue
+              gcloud container clusters get-credentials "${context##*_}" --region "$region" --project "$project" ;;
+          esac
+        done
+
+    - name: Test ${{ matrix.module }}
+      run: ./test.sh ${{ steps.envs.outputs.args }} ${{ matrix.module }}
+
+    - name: Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-${{ strategy.job-index }}
+        path: logs/
+        if-no-files-found: ignore

@@ -1,0 +1,26 @@
+name: Go
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Vet and test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: gofmt
+      run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt -w ."; exit 1; }
+    - name: go vet
+      run: go vet ./...
+    - name: go test
+      run: go test ./...
+    - name: shellcheck
+      run: |
+        docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable -S warning scripts/*.sh templates/*.sh
