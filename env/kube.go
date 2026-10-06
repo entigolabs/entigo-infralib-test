@@ -26,12 +26,15 @@ func RegisterKubeContext(cloud string, resolver KubeContextResolver) {
 	kubeContexts[cloud] = resolver
 }
 
-// KubeContext returns the kubeconfig context of the environment's cluster,
-// the name the cloud's CLI gives it (aws eks update-kubeconfig, gcloud
-// container clusters get-credentials, oci ce cluster create-kubeconfig).
-// The executor's kubeconfig must hold that context; the framework does not
-// write kubeconfigs.
-func (c *Config) KubeContext(t logger.T, e *Environment) string {
+// ResolveKubeContext computes the kubeconfig context of the environment's
+// cluster through the cloud's registered resolver, the name the cloud's CLI
+// gives it (aws eks update-kubeconfig, gcloud container clusters
+// get-credentials, oci ce cluster create-kubeconfig). ok is false when no
+// resolver is registered, i.e. the cloud package is not imported. The k8s
+// package first looks the context up in the kubeconfig itself and uses this
+// as the fallback. The executor's kubeconfig must hold the context; the
+// framework does not write kubeconfigs.
+func (c *Config) ResolveKubeContext(t logger.T, e *Environment) (context string, ok bool) {
 	t.Helper()
 	cluster := c.ClusterName(e)
 	if cluster == "" {
@@ -39,16 +42,23 @@ func (c *Config) KubeContext(t logger.T, e *Environment) string {
 	}
 	kubeMu.RLock()
 	resolver, ok := kubeContexts[e.Cloud]
-	registered := make([]string, 0, len(kubeContexts))
-	for cloud := range kubeContexts {
-		registered = append(registered, cloud)
-	}
 	kubeMu.RUnlock()
 	if !ok {
-		sort.Strings(registered)
-		t.Fatalf("no kube context resolver for cloud %q (registered: %v); import github.com/entigolabs/entigo-infralib-test/%s for its side effect", e.Cloud, registered, e.Cloud)
+		return "", false
 	}
-	return resolver(t, e, cluster)
+	return resolver(t, e, cluster), true
+}
+
+// RegisteredKubeContextClouds lists the clouds with a resolver, for messages.
+func RegisteredKubeContextClouds() []string {
+	kubeMu.RLock()
+	defer kubeMu.RUnlock()
+	clouds := make([]string, 0, len(kubeContexts))
+	for cloud := range kubeContexts {
+		clouds = append(clouds, cloud)
+	}
+	sort.Strings(clouds)
+	return clouds
 }
 
 // Gateway names the shared ingress gateway tests publish hostnames through.

@@ -49,8 +49,7 @@ func New(contextName, configPath, namespace string) *Client {
 // Connect returns a client for the environment's cluster, in the namespace of
 // the calling module's ArgoCD application (its agent module name), after
 // checking the kubeconfig can list pods there. The kubeconfig context is the
-// one the cloud's CLI gives the environment's cluster module, see
-// env.Config.KubeContext.
+// one the cloud's CLI gives the environment's cluster module, see KubeContext.
 func Connect(t logger.T, e *env.Environment) *Client {
 	t.Helper()
 	p := env.ModulePlacement(t, e)
@@ -60,7 +59,7 @@ func Connect(t logger.T, e *env.Environment) *Client {
 // ConnectNamespace is Connect for an explicit namespace.
 func ConnectNamespace(t logger.T, e *env.Environment, namespace string) *Client {
 	t.Helper()
-	context := env.MustLoad(t).KubeContext(t, e)
+	context := KubeContext(t, e)
 	c := &Client{Env: e, Context: context, Namespace: namespace}
 	allowed, err := c.CanIE("get", "pods")
 	if err != nil {
