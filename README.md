@@ -24,6 +24,7 @@ environments/<env>/<step>/<m>.yaml agent inputs of modules that come from anothe
 go.mod                            requires github.com/entigolabs/entigo-infralib-test
 test.sh                           copy of templates/test.sh, pins the framework version
 modules/<type>/<name>/            a module: aws/vpc, aws-v2/route53, google/gke, k8s/argocd ...
+modules/<type>/<name>/test.sh     copy of templates/module-test.sh: tests this module from its directory
 modules/<type>/<name>/test/
     <env>.yaml                    agent input of the module for that environment; its presence
                                   is what puts the module into the environment
@@ -122,7 +123,8 @@ Parallelism, from the outside in: the orchestrator runs the agent for every envi
 ```
 ./test.sh                              provision every environment you have credentials for, then test every module
 ./test.sh modules/k8s/hello-world      test one module in a step of its own on the shared environments
-./test.sh --env aws_demo test          only the tests, environments already provisioned
+modules/k8s/hello-world/test.sh        the same, from the module's directory (templates/module-test.sh)
+./test.sh --env aws_biz test           only the tests, environments already provisioned
 ./test.sh --destroy modules/aws/foo    tear the per-module step down afterwards (CI default)
 ./test.sh envs | generate | agent | shell ENV
 ./test.sh --help
