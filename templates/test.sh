@@ -24,7 +24,8 @@ CACHE="$ROOT/.infralib-test/scripts-${INFRALIB_TEST_VERSION}"
 case "$INFRALIB_TEST_VERSION" in latest|dev) rm -rf "$CACHE" ;; esac
 if [ ! -x "$CACHE/infralib-test.sh" ]; then
   echo "Extracting the test orchestrator from $IMAGE" >&2
-  docker pull -q "$IMAGE" >/dev/null
+  # A locally built image (no registry copy) is fine too.
+  docker pull -q "$IMAGE" >/dev/null 2>&1 || docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "cannot pull $IMAGE" >&2; exit 1; }
   id=$(docker create "$IMAGE")
   trap 'docker rm -f "$id" >/dev/null 2>&1 || true' EXIT
   mkdir -p "$ROOT/.infralib-test"

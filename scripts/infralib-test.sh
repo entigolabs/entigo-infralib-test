@@ -134,7 +134,8 @@ pull() {
   [ "$PULL" = true ] || return 0
   for p in "${PULLED[@]:-}"; do [ "$p" = "$image" ] && return 0; done
   log "Pulling $image"
-  docker pull -q "$image" >/dev/null
+  # A locally built image that no registry holds is fine too.
+  docker pull -q "$image" >/dev/null 2>&1 || docker image inspect "$image" >/dev/null 2>&1 || die "cannot pull $image"
   PULLED+=("$image")
 }
 
