@@ -39,7 +39,8 @@ options:
       --step-prefix P   name prefix of per-module steps (default: derived from
                         the user and branch, "main" on the main branch in CI)
       --destroy         after the tests, destroy the per-module steps created
-                        by this run (default when INFRALIB_DESTROY=true)
+                        by this run (or INFRALIB_DESTROY=true); off by default,
+                        shared test environments are usually nuked on a schedule
       --timeout D       go test timeout per module (default 30m)
       --run REGEX       only run tests matching REGEX
       --tag TAG         image tag (default: INFRALIB_TEST_VERSION, else latest)

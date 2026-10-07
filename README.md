@@ -137,7 +137,7 @@ Parallelism, from the outside in: the orchestrator runs the agent for every envi
 ./test.sh modules/k8s/hello-world      test one module in a step of its own on the shared environments
 modules/k8s/hello-world/test.sh        the same, from the module's directory (templates/module-test.sh)
 ./test.sh --env aws_biz test           only the tests, environments already provisioned
-./test.sh --destroy modules/aws/foo    tear the per-module step down afterwards (CI default)
+./test.sh --destroy modules/aws/foo    tear the per-module step down afterwards
 ./test.sh envs | generate | agent | shell ENV
 ./test.sh --help
 ```
@@ -164,7 +164,7 @@ Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Im
 
 Three reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
 
-- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name), and destroys the steps afterwards.
+- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
 - `module-stable.yaml`: one job per environment that provisions the latest release of the repository from `release_repo` and runs the tests of that release; a final `Stable` job gates on all of them.
 - `module-release.yaml`: one job per environment that applies `main` from the repository's git URL and tests it, then a `Release` job that tags main, creates the GitHub release and publishes `modules/` without tests to `release_repo` over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access). The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one; the release repository's tag marks completion so an interrupted publish resumes.
 

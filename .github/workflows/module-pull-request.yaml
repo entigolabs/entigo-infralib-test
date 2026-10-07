@@ -1,6 +1,8 @@
 # Reusable workflow for module repositories: test the modules a pull request
 # changed, one at a time, each in a step of its own on the shared
-# environments, and destroy those steps afterwards.
+# environments. The steps are left in place: tearing down and recreating
+# something like a cluster on every push would be slow and wasteful, and the
+# test environments are nuked daily anyway.
 #
 # In the module repository:
 #
@@ -95,7 +97,6 @@ jobs:
       GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
       OCI_REGION: ${{ secrets.OCI_REGION }}
       OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
-      INFRALIB_DESTROY: "true"
     steps:
     - uses: actions/checkout@v4
     - name: Wait for other runs on the shared environments
