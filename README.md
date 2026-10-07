@@ -12,12 +12,6 @@ A module repository keeps its tests as ordinary Go tests next to each module. Th
 
 [entigo-infralib-example-source](https://github.com/entigolabs/entigo-infralib-example-source) is the smallest complete consumer and the place to start.
 
-## Pipelines
-
-- **Pull request**: every module a pull request changes is applied in a step of its own on both environments and tested, then destroyed. Needs the `AWS_*` secrets.
-- **Stable** (weekday mornings, or by hand): provisions both environments from [entigo-infralib-example-release](https://github.com/entigolabs/entigo-infralib-example-release) at the latest release and runs that release's tests.
-- **Release** (after a green Stable, or by hand): applies `main` to both environments, tests, and when main is ahead of the latest release tags it, creates the GitHub release and publishes `modules/` to the release repository. Needs `SSH_PRIVATE_KEY`, a deploy key with write access there.
-
 ## Status
 
 Scaffolding. Nothing here has run against a cloud yet. See [Roadmap](#roadmap).
