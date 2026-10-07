@@ -124,7 +124,7 @@ jobs:
 
   stable:
     name: Stable
-    needs: environment
+    needs: [plan, environment]
     runs-on: ${{ inputs.runs-on }}
     steps:
-    - run: echo "Release ${{ needs.plan.outputs.release || 'latest' }} is stable on every environment"
+    - run: echo "Release ${{ needs.plan.outputs.release }} is stable on every environment"
