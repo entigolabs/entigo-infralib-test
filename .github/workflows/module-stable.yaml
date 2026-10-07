@@ -113,8 +113,11 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
-    - name: Provision ${{ matrix.environment }} from the latest release
-      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.source || inputs.release_repo || format('{0}/{1}', github.server_url, github.repository) }}
+    - name: Provision ${{ matrix.environment }} from release ${{ needs.plan.outputs.release }}
+      # The version is pinned to the release under test rather than left to the
+      # agent's "latest": deterministic, and it sidesteps the agent checking a
+      # module against the version recorded in state when the source changes.
+      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.source || inputs.release_repo || format('{0}/{1}', github.server_url, github.repository) }} --version ${{ needs.plan.outputs.release }}
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
       with:
         environments: ${{ matrix.environment }}
