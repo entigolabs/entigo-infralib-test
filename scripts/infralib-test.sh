@@ -38,6 +38,7 @@ options:
                         instead of per-module steps of this branch
       --step-prefix P   name prefix of per-module steps (default: derived from
                         the user and branch, "main" on the main branch in CI)
+      --steps LIST      only run these agent steps (comma separated) in a full run
       --destroy         after the tests, destroy the per-module steps created
                         by this run (or INFRALIB_DESTROY=true); off by default,
                         shared test environments are usually nuked on a schedule
@@ -85,6 +86,7 @@ SELF_SOURCE=""
 SELF_VERSION=""
 IN_PLACE=false
 STEP_PREFIX=""
+ONLY_STEPS=""
 DESTROY="${INFRALIB_DESTROY:-false}"
 DESTROY_ALL=false
 TIMEOUT=30m
@@ -105,6 +107,7 @@ while [ $# -gt 0 ]; do
     --version) SELF_VERSION=$2; shift 2 ;;
     --in-place) IN_PLACE=true; shift ;;
     --step-prefix) STEP_PREFIX=$2; shift 2 ;;
+    --steps) ONLY_STEPS=$2; shift 2 ;;
     --destroy) DESTROY=true; shift ;;
     --all) DESTROY_ALL=true; shift ;;
     --timeout) TIMEOUT=$2; shift 2 ;;
@@ -293,7 +296,8 @@ generate() {
     set -- $line
     case "$2" in
       skip) warn "Skipping $1: none of the modules has an input for it" ;;
-      *) declare -g "STEPS_${1//-/_}=$2"; SELECTED+=("$1"); echo "    $1: steps $2" >&2 ;;
+      *) steps=$2; [ "$steps" = all ] && [ -n "$ONLY_STEPS" ] && steps=$ONLY_STEPS
+         declare -g "STEPS_${1//-/_}=$steps"; SELECTED+=("$1"); echo "    $1: steps $steps" >&2 ;;
     esac
   done < <(run_in cli -- infralib-test generate "${args[@]}")
   ENVS=("${SELECTED[@]}")
