@@ -159,18 +159,19 @@ Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Im
 Three reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
 
 - `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
-- `module-stable.yaml`: one job per environment that provisions the latest release of the repository and runs the tests of that release; a final `Stable` job gates on all of them. The modules come from `release_repo` when given, otherwise from the repository itself.
-- `module-release.yaml`: one job per environment that applies `main` from the repository's git URL and tests it, then a `Release` job that tags main and creates the GitHub release. With the optional `release_repo` it also publishes `modules/` without tests there over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access), and that repository's tag marks completion so an interrupted publish resumes. The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one.
+- `module-stable.yaml`: one job per environment that provisions the latest release of the repository and runs the tests of that release; a final `Stable` job gates on all of them. The modules come from `source` when given (for example an `oci://` registry), else from `release_repo`, else from the repository itself.
+- `module-release.yaml`: one job per environment that applies `main` from the repository's git URL and tests it, then a `Release` job that tags main and creates the GitHub release. The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one. Two optional destinations:
+  - `oci_registries`: charts (`<registry>/k8s/<chart>:<version>`), OpenTofu modules (`<registry>/<type>/<module>:<version>`), an SBOM attached to each, and a cosign-signed `index:<version>` holding the released tree, `manifest.json` and an index SBOM. Pushed to the first registry and mirrored byte-identically to the rest; ghcr.io logs in with the run's token, public.ecr.aws with the AWS secrets and creates missing repositories. The release gets `manifest.json` and the index zip as assets, which also mark completion. The agent consumes it as `oci://<registry>`.
+  - `release_repo`: `modules/` without tests pushed over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access), its tag marking completion. This is how entigo-infralib-release is made; it predates OCI and is kept for compatibility.
 
-A release repository such as entigo-infralib-release predates OCI publishing and is optional; OCI publishing (next on the roadmap) will be the primary distribution, and most repositories will release to OCI and their own git tags only.
+  An interrupted run resumes whatever destination is missing on the next run.
 
 ## Roadmap
 
 In order:
 
 1. Publish the images and run the example repository end to end on AWS; fix what that finds.
-2. OCI publishing of charts and modules in the release workflow, as entigo-infralib does today.
-3. Nuke of test accounts, shipped with the framework.
+2. Nuke of test accounts, shipped with the framework.
 4. Google and Oracle environments in the example.
 5. Version report (`report.sh`) for consumers.
 6. Migrate `entigo-infralib` on a branch.

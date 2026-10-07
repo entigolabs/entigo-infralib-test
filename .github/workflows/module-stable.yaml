@@ -25,6 +25,10 @@ on:
         description: optional git URL the releases are published to; the agent source of the repository's modules, default the repository itself
         type: string
         default: ''
+      source:
+        description: optional agent source for the repository's modules that overrides release_repo, e.g. oci://ghcr.io/<org>/<repo>-release
+        type: string
+        default: ''
 
       environments:
         description: comma separated environments to run; empty means every environment with credentials
@@ -110,7 +114,7 @@ jobs:
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
     - name: Provision ${{ matrix.environment }} from the latest release
-      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.release_repo || format('{0}/{1}', github.server_url, github.repository) }}
+      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.source || inputs.release_repo || format('{0}/{1}', github.server_url, github.repository) }}
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
       with:
         environments: ${{ matrix.environment }}

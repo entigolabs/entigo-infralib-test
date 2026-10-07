@@ -1,9 +1,10 @@
 # Reusable workflow for module repositories: apply main to every environment,
 # one job per environment, test it, and when main is ahead of the latest
 # release, tag it and create the GitHub release. Optionally also publish the
-# modules to a release repository (the way entigo-infralib-release is made).
-# That repository predates OCI publishing and is not required; OCI publishing
-# will be the primary distribution.
+# modules as OCI packages (charts, modules, SBOMs and a signed index, mirrored
+# to every listed registry) and to a release repository (the way
+# entigo-infralib-release is made). The release repository predates OCI
+# publishing and is not required.
 #
 #   on:
 #     workflow_run:
@@ -15,19 +16,26 @@
 #       if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-release.yaml@main
 #       with:
-#         release_repo: https://github.com/<org>/<repo>-release   # optional
+#         oci_registries: ghcr.io/<org>/<repo>-release,public.ecr.aws/<alias>/<repo>-release   # optional
+#         release_repo: https://github.com/<org>/<repo>-release                                # optional
 #       secrets: inherit
 #
 # The version is <release_version.txt>.0 when the file's major.minor moved,
-# otherwise the latest release's patch plus one. Publishing to release_repo
-# needs the SSH_PRIVATE_KEY secret, a deploy key with write access there, and
-# that repository's tag is then the completion marker: a run that died after
-# creating the GitHub release resumes the publish on the next run.
+# otherwise the latest release's patch plus one. OCI publishing logs in to
+# ghcr.io with the run's token and to public.ecr.aws with the AWS secrets;
+# the GitHub release's manifest.json asset is its completion marker.
+# Publishing to release_repo needs the SSH_PRIVATE_KEY secret, a deploy key
+# with write access there, and that repository's tag is its marker. A run
+# that died after creating the GitHub release resumes what is missing.
 name: Module release
 
 on:
   workflow_call:
     inputs:
+      oci_registries:
+        description: optional comma separated OCI registry paths to publish charts, modules and the signed index to; the first is primary, the rest mirrors
+        type: string
+        default: ''
       release_repo:
         description: optional git URL (https://github.com/<org>/<repo>) to publish the modules to, without their tests
         type: string
@@ -127,6 +135,11 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write
+      packages: write
+      id-token: write
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -137,6 +150,7 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
         RELEASE_REPO: ${{ inputs.release_repo }}
+        OCI_REGISTRIES: ${{ inputs.oci_registries }}
       run: |
         set -euo pipefail
         release_repo_slug=${RELEASE_REPO#https://github.com/}
@@ -149,11 +163,17 @@ jobs:
         else
           latest_sha=$(git rev-list -n1 "$latest_tag" 2>/dev/null || echo "")
           if [ "$latest_sha" = "$main_sha" ]; then
-            # main is released; with a release repository, make sure it got it.
-            if [ -z "${RELEASE_REPO}" ] || gh api "repos/${release_repo_slug}/git/ref/tags/${latest_tag}" >/dev/null 2>&1; then
+            # main is released; make sure every configured destination got it.
+            complete=true
+            if [ -n "${RELEASE_REPO}" ] && ! gh api "repos/${release_repo_slug}/git/ref/tags/${latest_tag}" >/dev/null 2>&1; then
+              echo "::warning::release ${latest_tag} exists but ${release_repo_slug} has no such tag, resuming its publish"; complete=false
+            fi
+            if [ -n "${OCI_REGISTRIES}" ] && ! gh release view "${latest_tag}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | grep -qx manifest.json; then
+              echo "::warning::release ${latest_tag} exists but has no manifest.json asset, resuming its OCI publish"; complete=false
+            fi
+            if [ "$complete" = true ]; then
               needed=false; new="$latest_tag"; exists=true
             else
-              echo "::warning::release ${latest_tag} exists but ${release_repo_slug} has no such tag, resuming its publish"
               needed=true; new="$latest_tag"; exists=true
             fi
           else
@@ -164,7 +184,7 @@ jobs:
           fi
         fi
         echo "latest=${latest_tag} main=${main_sha} new=${new} needed=${needed} exists=${exists}"
-        { echo "new=${new}"; echo "needed=${needed}"; echo "exists=${exists}"; echo "latest=${latest_tag}"; } >> "$GITHUB_OUTPUT"
+        { echo "new=${new}"; echo "oci=${new#v}"; echo "needed=${needed}"; echo "exists=${exists}"; echo "latest=${latest_tag}"; } >> "$GITHUB_OUTPUT"
     - name: Tag and create the GitHub release
       if: steps.version.outputs.needed == 'true' && steps.version.outputs.exists != 'true'
       env:
@@ -181,6 +201,20 @@ jobs:
         [ -n "$LATEST" ] && notes_args+=(--notes-start-tag "$LATEST")
         gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --notes "## Changed modules
         ${changed:-- none}" --latest
+    - name: Publish OCI packages
+      if: steps.version.outputs.needed == 'true' && inputs.oci_registries != ''
+      id: oci
+      uses: entigolabs/entigo-infralib-test/.github/actions/oci-publish@main
+      with:
+        registries: ${{ inputs.oci_registries }}
+        version: ${{ steps.version.outputs.oci }}
+        out: ${{ runner.temp }}/oci-publish
+    - name: Attach manifest and index to the release
+      if: steps.version.outputs.needed == 'true' && inputs.oci_registries != ''
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NEW: ${{ steps.version.outputs.new }}
+      run: gh release upload "$NEW" --repo "${GITHUB_REPOSITORY}" --clobber "${RUNNER_TEMP}/oci-publish/manifest.json" "${RUNNER_TEMP}"/oci-publish/index-*.zip
     - name: Publish to ${{ inputs.release_repo }}
       if: steps.version.outputs.needed == 'true' && inputs.release_repo != ''
       env:
