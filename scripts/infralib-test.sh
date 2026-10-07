@@ -19,7 +19,8 @@ usage: test.sh [command] [options] [module-dir ...]
 commands:
   run        (default) provision with the agent, then run the module tests
   agent      only provision with the agent
-  test       only run the module tests (environments are already provisioned)
+  test       only run the module tests of what is provisioned: the modules
+             in their regular steps (use run for per-branch steps)
   generate   only write the agent configurations under agents/
   destroy    destroy the per-module steps of this branch (module-dir args) or,
              with --all, every step of the selected environments
@@ -400,6 +401,9 @@ case $COMMAND in
     ;;
   test)
     select_environments
+    # Tests of what is deployed: the modules sit in their regular steps, a
+    # module argument only narrows which tests run.
+    IN_PLACE=true
     generate
     run_tests
     ;;
