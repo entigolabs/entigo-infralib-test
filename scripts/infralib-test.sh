@@ -161,19 +161,21 @@ require_cloud() {
   esac
 }
 
-# docker run arguments shared by every container: the checkout at /conf, the
-# executor's uid so written files are theirs, and the credentials of a cloud.
-# Credentials are passed by environment variable and read-only mount; the
-# paths inside the container are fixed and announced through the variables
-# the tools read, so HOME inside the container does not matter.
+# base_args CLOUD ROLE: docker run arguments shared by every container: the
+# checkout at /conf, the executor's uid so written files are theirs, and the
+# credentials of a cloud. Credentials are passed by environment variable and
+# read-only mount; the paths inside the container are fixed and announced
+# through the variables the tools read, so HOME inside the container does not
+# matter. ROLE is "test" or "agent": only test containers get the executor's
+# kubeconfig; the agent builds its own with the cloud CLI (aws eks
+# update-kubeconfig and friends) and must not be pointed at a read-only one.
 base_args() {
-  local cloud=$1
+  local cloud=$1 role=${2:-test}
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
         -e INFRALIB_ROOT=/conf -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
   mkdir -p .infralib-test/plugin-cache
-  # Kubeconfig: whatever the executor has, read-only.
   local kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
-  if [ -f "$kubeconfig" ]; then
+  if [ "$role" = test ] && [ -f "$kubeconfig" ]; then
     ARGS+=(-v "$kubeconfig:/creds/kubeconfig:ro" -e KUBECONFIG=/creds/kubeconfig)
   fi
   case $cloud in
@@ -323,7 +325,7 @@ run_agent() {
   local sub=$1 e=$2 cloud prefix steps
   cloud=$(env_cloud "$e"); prefix=$(env_prefix "$e")
   local var="STEPS_${e//-/_}"; steps="${!var:-all}"
-  base_args "$cloud"
+  base_args "$cloud" agent
   if [ "$cloud" = google ] && [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
     ARGS+=(-e "GOOGLE_APPLICATION_CREDENTIALS_JSON=$(cat "$GOOGLE_APPLICATION_CREDENTIALS")")
   fi
