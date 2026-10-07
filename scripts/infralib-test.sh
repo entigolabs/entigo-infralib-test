@@ -327,7 +327,11 @@ run_agent() {
   # apply stage through the container's filesystem instead of a CodeBuild
   # or Cloud Build artifact; the old all-in-one test image baked it in.
   ARGS+=(-e LOCAL_MODE=true)
-  local cmd=(ei-agent "$sub" -c "/conf/agents/$e/config.yaml" --prefix "$prefix" --pipeline-type=local --allow-parallel=false)
+  local cmd=(ei-agent "$sub" -c "/conf/agents/$e/config.yaml" --prefix "$prefix" --pipeline-type=local)
+  case $sub in
+    run)     cmd+=(--allow-parallel=false) ;;
+    destroy) cmd+=(--yes) ;;  # nobody is there to confirm
+  esac
   [ "$steps" != all ] && cmd+=(--steps "$steps")
   mkdir -p "logs/$e"
   log "Agent $sub for $e (steps: $steps)"
