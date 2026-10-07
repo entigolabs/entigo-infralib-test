@@ -32,6 +32,7 @@ steps:
       - source: aws/hello-world
   - name: infra
     type: terraform
+    manual_approve_run: changes
     vpc:
       attach: true
     modules:
@@ -155,6 +156,11 @@ func TestGenerateFull(t *testing.T) {
 	steps := raw["steps"].([]any)
 	require.Equal(t, "force", steps[0].(map[string]any)["approve"])
 	require.Equal(t, map[string]any{"attach": true}, steps[1].(map[string]any)["vpc"])
+	// Unattended runs: approvals default to never, a step's own setting wins.
+	require.Equal(t, "never", steps[0].(map[string]any)["manual_approve_run"])
+	require.Equal(t, "never", steps[0].(map[string]any)["manual_approve_update"])
+	require.Equal(t, "changes", steps[1].(map[string]any)["manual_approve_run"])
+	require.Equal(t, "never", steps[1].(map[string]any)["manual_approve_update"])
 	entries, _ := os.ReadDir(filepath.Join(out, "aws_exa"))
 	require.Len(t, entries, 1, "only config.yaml")
 

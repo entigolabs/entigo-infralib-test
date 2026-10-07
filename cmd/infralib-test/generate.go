@@ -137,7 +137,8 @@ func anyModuleIsMember(opts generateOptions, e *env.Environment) bool {
 
 // generateEnvironment patches a copy of the environment's agent config and
 // writes it to agents/<env>/config.yaml. It returns the steps to run (nil
-// for all). Fields the framework does not model pass through untouched.
+// for all). Fields the framework does not model pass through untouched;
+// the approval fields default to never, since nobody is there to answer.
 func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, error) {
 	config := opts.Config
 	raw := e.Raw()
@@ -149,6 +150,13 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	var local, external []string // module sources by origin, for the source include list
 	for i, step := range e.Steps {
 		rawStep, _ := rawSteps[i].(map[string]any)
+		// A test run is unattended: approve everything the agent would ask
+		// about unless the step says otherwise.
+		for _, key := range []string{"manual_approve_run", "manual_approve_update"} {
+			if _, set := rawStep[key]; !set {
+				rawStep[key] = "never"
+			}
+		}
 		rawModules, _ := rawStep["modules"].([]any)
 		for j, ref := range step.Modules {
 			m, err := config.Resolve(ref)
