@@ -1,7 +1,9 @@
 # Reusable workflow for module repositories: apply main to every environment,
 # one job per environment, test it, and when main is ahead of the latest
-# release, tag it, create the GitHub release and publish the modules to the
-# release repository.
+# release, tag it and create the GitHub release. Optionally also publish the
+# modules to a release repository (the way entigo-infralib-release is made).
+# That repository predates OCI publishing and is not required; OCI publishing
+# will be the primary distribution.
 #
 #   on:
 #     workflow_run:
@@ -13,23 +15,24 @@
 #       if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-release.yaml@main
 #       with:
-#         release_repo: https://github.com/<org>/<repo>-release
+#         release_repo: https://github.com/<org>/<repo>-release   # optional
 #       secrets: inherit
 #
 # The version is <release_version.txt>.0 when the file's major.minor moved,
-# otherwise the latest release's patch plus one. Publishing needs the
-# SSH_PRIVATE_KEY secret: a deploy key with write access to release_repo.
-# The release repository's tag is the completion marker: a run that died
-# after creating the GitHub release resumes the publish on the next run.
+# otherwise the latest release's patch plus one. Publishing to release_repo
+# needs the SSH_PRIVATE_KEY secret, a deploy key with write access there, and
+# that repository's tag is then the completion marker: a run that died after
+# creating the GitHub release resumes the publish on the next run.
 name: Module release
 
 on:
   workflow_call:
     inputs:
       release_repo:
-        description: git URL (https://github.com/<org>/<repo>) the modules are published to
+        description: optional git URL (https://github.com/<org>/<repo>) to publish the modules to, without their tests
         type: string
-        required: true
+        default: ''
+
       environments:
         description: comma separated environments to run; empty means every environment with credentials
         type: string
@@ -146,8 +149,8 @@ jobs:
         else
           latest_sha=$(git rev-list -n1 "$latest_tag" 2>/dev/null || echo "")
           if [ "$latest_sha" = "$main_sha" ]; then
-            # main is released; make sure the release repository got it.
-            if gh api "repos/${release_repo_slug}/git/ref/tags/${latest_tag}" >/dev/null 2>&1; then
+            # main is released; with a release repository, make sure it got it.
+            if [ -z "${RELEASE_REPO}" ] || gh api "repos/${release_repo_slug}/git/ref/tags/${latest_tag}" >/dev/null 2>&1; then
               needed=false; new="$latest_tag"; exists=true
             else
               echo "::warning::release ${latest_tag} exists but ${release_repo_slug} has no such tag, resuming its publish"
@@ -179,7 +182,7 @@ jobs:
         gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --notes "## Changed modules
         ${changed:-- none}" --latest
     - name: Publish to ${{ inputs.release_repo }}
-      if: steps.version.outputs.needed == 'true'
+      if: steps.version.outputs.needed == 'true' && inputs.release_repo != ''
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         RELEASE_REPO: ${{ inputs.release_repo }}

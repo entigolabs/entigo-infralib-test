@@ -9,21 +9,23 @@
 #     stable:
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-stable.yaml@main
 #       with:
-#         release_repo: https://github.com/<org>/<repo>-release
+#         release_repo: https://github.com/<org>/<repo>-release   # optional
 #       secrets: inherit
 #
-# The repository's own modules come from release_repo (the agent takes its
-# latest release); the tests are those of the source repository at its latest
-# release tag, so the two match. Credentials as in module-pull-request.yaml.
+# The repository's own modules come from release_repo when given, otherwise
+# from the repository itself; either way the agent takes the latest release.
+# The tests are those of the repository at its latest release tag, so the
+# two match. Credentials as in module-pull-request.yaml.
 name: Module stable
 
 on:
   workflow_call:
     inputs:
       release_repo:
-        description: git URL the releases of this repository are published to; the agent source of its modules
+        description: optional git URL the releases are published to; the agent source of the repository's modules, default the repository itself
         type: string
-        required: true
+        default: ''
+
       environments:
         description: comma separated environments to run; empty means every environment with credentials
         type: string
@@ -107,8 +109,8 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
-    - name: Provision ${{ matrix.environment }} from ${{ inputs.release_repo }}
-      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.release_repo }}
+    - name: Provision ${{ matrix.environment }} from the latest release
+      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.release_repo || format('{0}/{1}', github.server_url, github.repository) }}
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
       with:
         environments: ${{ matrix.environment }}
