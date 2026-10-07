@@ -1,0 +1,15 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [Stable]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  release:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    uses: entigolabs/entigo-infralib-test/.github/workflows/module-release.yaml@main
+    with:
+      release_repo: https://github.com/entigolabs/entigo-infralib-example-release
+    secrets: inherit

@@ -1,0 +1,13 @@
+name: Stable
+
+on:
+  schedule:
+    - cron: "31 3 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  stable:
+    uses: entigolabs/entigo-infralib-test/.github/workflows/module-stable.yaml@main
+    with:
+      release_repo: https://github.com/entigolabs/entigo-infralib-example-release
+    secrets: inherit
