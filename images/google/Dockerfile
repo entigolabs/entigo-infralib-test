@@ -26,6 +26,9 @@ USER root
 # newer go directive from downloading another toolchain; bump GO_VERSION instead.
 # GOFLAGS=-mod=mod lets a test add a dependency the image did not cache: it is
 # downloaded on the spot and the cache catches up on the next image build.
+# LOCAL_MODE: the agent's entrypoint scripts pass the plan to the apply stage
+# through the filesystem (ei-agent --pipeline-type=local), not a CI artifact.
+ENV LOCAL_MODE=true
 ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/go/cache GOTOOLCHAIN=local GOFLAGS=-mod=mod \
     PATH=/usr/local/go/bin:/go/bin:$PATH \
     INFRALIB_TEST_CLOUD=google

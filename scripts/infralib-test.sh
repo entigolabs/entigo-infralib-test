@@ -327,6 +327,10 @@ run_agent() {
   if [ "$cloud" = google ] && [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
     ARGS+=(-e "GOOGLE_APPLICATION_CREDENTIALS_JSON=$(cat "$GOOGLE_APPLICATION_CREDENTIALS")")
   fi
+  # LOCAL_MODE makes the agent's entrypoint scripts hand the plan to the
+  # apply stage through the container's filesystem instead of a CodeBuild
+  # or Cloud Build artifact; the old all-in-one test image baked it in.
+  ARGS+=(-e LOCAL_MODE=true)
   local cmd=(ei-agent "$sub" -c "/conf/agents/$e/config.yaml" --prefix "$prefix" --pipeline-type=local --allow-parallel=false)
   [ "$steps" != all ] && cmd+=(--steps "$steps")
   mkdir -p "logs/$e"
