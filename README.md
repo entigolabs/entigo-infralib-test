@@ -86,7 +86,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	_ "github.com/entigolabs/entigo-infralib-test/aws" // registers the output reader of the clouds the module runs on
+	_ "github.com/entigolabs/entigo-infralib-test/aws" // output reader of each cloud the module runs on; tf.Get and k8s.Gateway need it
 	"github.com/entigolabs/entigo-infralib-test/env"
 	"github.com/entigolabs/entigo-infralib-test/k8s"
 	"github.com/entigolabs/entigo-infralib-test/tf"
@@ -113,7 +113,7 @@ func TestHelloWorldExposure(t *testing.T) {
 func testPublic(t *testing.T, e *env.Environment) {
 	c := k8s.Connect(t, e)                    // the environment's cluster, in the module's namespace
 	k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 20, 6*time.Second)
-	gateway := k8s.Gateway(t, e, "external")   // derived from the aws-alb and route53 modules
+	gateway := k8s.Gateway(t, e, "external")   // derived from the aws-alb and route53 modules; needs the aws import above
 	require.NoError(t, k8s.WaitUntilHostnameAvailable(t, c, gateway, "https://"+gateway.Hostname(c.Namespace), "200", gateway.Retries, 6*time.Second))
 }
 

@@ -61,7 +61,7 @@ func GetStep(t logger.T, e *env.Environment, step string) Outputs {
 	readersMu.RUnlock()
 	if !ok {
 		sort.Strings(registered)
-		t.Fatalf("no output reader for cloud %q (registered: %v); import github.com/entigolabs/entigo-infralib-test/%s for its side effect", e.Cloud, registered, e.Cloud)
+		t.Fatalf("no output reader for cloud %q (registered: %v): reading OpenTofu outputs needs the cloud's package, add `import _ \"github.com/entigolabs/entigo-infralib-test/%s\"` to the test (k8s.Gateway reads outputs too)", e.Cloud, registered, e.Cloud)
 	}
 	return reader(t, e, file)
 }

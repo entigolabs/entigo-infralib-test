@@ -18,7 +18,10 @@ import (
 //   - domain: the pub_domain output of the environment's DNS module
 //     (route53 or dns) for "external", int_domain for "internal".
 //
-// kind is "external" or "internal".
+// kind is "external" or "internal". The domain comes from OpenTofu outputs,
+// so the test must import the cloud's package for its output reader:
+//
+//	import _ "github.com/entigolabs/entigo-infralib-test/aws"
 func Gateway(t logger.T, e *env.Environment, kind string) env.Gateway {
 	t.Helper()
 	config := env.MustLoad(t)
