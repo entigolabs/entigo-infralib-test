@@ -1,0 +1,32 @@
+name: Kubeconfig for the environments' clusters
+description: >
+  The executor builds the kubeconfig; the framework picks the context the
+  cloud CLI gives each environment's cluster. Reads the environments through
+  the repository's test.sh, so it runs after the clusters exist (after the
+  agent). EKS and GKE are covered; OKE is left to the repository.
+inputs:
+  environments:
+    description: comma separated environment names; empty means all
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ENVIRONMENTS: ${{ inputs.environments }}
+      run: |
+        set -euo pipefail
+        ./test.sh envs --tsv | while IFS=$'\t' read -r name cloud prefix region zone project compartment cluster; do
+          if [ -n "${ENVIRONMENTS}" ]; then
+            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
+          fi
+          [ -n "$cluster" ] || continue
+          case "$cloud" in
+            aws)
+              [ -n "${AWS_ACCESS_KEY_ID:-}" ] || continue
+              aws eks update-kubeconfig --region "${AWS_REGION}" --name "$cluster" ;;
+            google)
+              [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || continue
+              gcloud container clusters get-credentials "$cluster" --region "${GOOGLE_REGION}" --project "${GOOGLE_PROJECT}" ;;
+          esac
+        done

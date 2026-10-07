@@ -1,0 +1,213 @@
+# Reusable workflow for module repositories: apply main to every environment,
+# one job per environment, test it, and when main is ahead of the latest
+# release, tag it, create the GitHub release and publish the modules to the
+# release repository.
+#
+#   on:
+#     workflow_run:
+#       workflows: [Stable]
+#       types: [completed]
+#     workflow_dispatch:
+#   jobs:
+#     release:
+#       if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+#       uses: entigolabs/entigo-infralib-test/.github/workflows/module-release.yaml@main
+#       with:
+#         release_repo: https://github.com/<org>/<repo>-release
+#       secrets: inherit
+#
+# The version is <release_version.txt>.0 when the file's major.minor moved,
+# otherwise the latest release's patch plus one. Publishing needs the
+# SSH_PRIVATE_KEY secret: a deploy key with write access to release_repo.
+# The release repository's tag is the completion marker: a run that died
+# after creating the GitHub release resumes the publish on the next run.
+name: Module release
+
+on:
+  workflow_call:
+    inputs:
+      release_repo:
+        description: git URL (https://github.com/<org>/<repo>) the modules are published to
+        type: string
+        required: true
+      environments:
+        description: comma separated environments to run; empty means every environment with credentials
+        type: string
+        default: ''
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  plan:
+    name: Environments
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      matrix: ${{ steps.envs.outputs.matrix }}
+    env:
+      HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+      HAS_GOOGLE: ${{ secrets.GOOGLE_CREDENTIALS != '' }}
+      HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+    - name: Select environments
+      id: envs
+      env:
+        ENVIRONMENTS: ${{ inputs.environments }}
+      run: |
+        set -euo pipefail
+        selected=$(./test.sh envs --tsv | while IFS=$'\t' read -r name cloud rest; do
+          if [ -n "${ENVIRONMENTS}" ]; then
+            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
+          fi
+          case "$cloud" in
+            aws) [ "${HAS_AWS}" = true ] && echo "$name" ;;
+            google) [ "${HAS_GOOGLE}" = true ] && echo "$name" ;;
+            oracle) [ "${HAS_ORACLE}" = true ] && echo "$name" ;;
+          esac
+        done | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        echo "Environments: ${selected}"
+        [ "${selected}" != "[]" ] || { echo "::error::no environment has credentials" >&2; exit 1; }
+        echo "matrix={\"environment\":${selected}}" >> "$GITHUB_OUTPUT"
+
+  environment:
+    name: ${{ matrix.environment }}
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      GOOGLE_PROJECT: ${{ secrets.GOOGLE_PROJECT }}
+      GOOGLE_REGION: ${{ secrets.GOOGLE_REGION }}
+      GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+    - name: Wait for other runs on the shared environments
+      uses: softprops/turnstyle@v3
+      with:
+        abort-after-seconds: 3600
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+      with:
+        google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
+        oci_config: ${{ secrets.OCI_CONFIG }}
+        oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+    - name: Apply main to ${{ matrix.environment }}
+      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ github.server_url }}/${{ github.repository }} --version main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+      with:
+        environments: ${{ matrix.environment }}
+    - name: Test ${{ matrix.environment }}
+      run: ./test.sh test --env ${{ matrix.environment }}
+    - name: Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-${{ matrix.environment }}
+        path: logs/
+        if-no-files-found: ignore
+
+  release:
+    name: Release
+    needs: environment
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+    - name: Decide the version
+      id: version
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_REPO: ${{ inputs.release_repo }}
+      run: |
+        set -euo pipefail
+        release_repo_slug=${RELEASE_REPO#https://github.com/}
+        latest=$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName,targetCommitish --jq '.tagName + " " + .targetCommitish' 2>/dev/null || echo "")
+        latest_tag=${latest%% *}
+        main_sha=$(git rev-parse HEAD)
+        wanted=$(tr -d '[:space:]' < release_version.txt)
+        if [ -z "$latest_tag" ]; then
+          new="v${wanted}.0"; needed=true; exists=false
+        else
+          latest_sha=$(git rev-list -n1 "$latest_tag" 2>/dev/null || echo "")
+          if [ "$latest_sha" = "$main_sha" ]; then
+            # main is released; make sure the release repository got it.
+            if gh api "repos/${release_repo_slug}/git/ref/tags/${latest_tag}" >/dev/null 2>&1; then
+              needed=false; new="$latest_tag"; exists=true
+            else
+              echo "::warning::release ${latest_tag} exists but ${release_repo_slug} has no such tag, resuming its publish"
+              needed=true; new="$latest_tag"; exists=true
+            fi
+          else
+            major_minor=$(echo "$latest_tag" | sed -E 's/^v([0-9]+\.[0-9]+)\.[0-9]+$/\1/')
+            patch=$(echo "$latest_tag" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)$/\1/')
+            if [ "$major_minor" = "$wanted" ]; then new="v${major_minor}.$((patch + 1))"; else new="v${wanted}.0"; fi
+            needed=true; exists=false
+          fi
+        fi
+        echo "latest=${latest_tag} main=${main_sha} new=${new} needed=${needed} exists=${exists}"
+        { echo "new=${new}"; echo "needed=${needed}"; echo "exists=${exists}"; echo "latest=${latest_tag}"; } >> "$GITHUB_OUTPUT"
+    - name: Tag and create the GitHub release
+      if: steps.version.outputs.needed == 'true' && steps.version.outputs.exists != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NEW: ${{ steps.version.outputs.new }}
+        LATEST: ${{ steps.version.outputs.latest }}
+      run: |
+        set -euo pipefail
+        git config user.name "GitHub Actions" && git config user.email "actions@github.com"
+        git tag -a "$NEW" -m "Release $NEW"
+        git push origin "$NEW"
+        changed=$(git diff --name-only "${LATEST:-$(git rev-list --max-parents=0 HEAD)}" HEAD -- modules | cut -d/ -f1-3 | sort -u | sed 's/^/- /')
+        notes_args=(--generate-notes)
+        [ -n "$LATEST" ] && notes_args+=(--notes-start-tag "$LATEST")
+        gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --notes "## Changed modules
+        ${changed:-- none}" --latest
+    - name: Publish to ${{ inputs.release_repo }}
+      if: steps.version.outputs.needed == 'true'
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        RELEASE_REPO: ${{ inputs.release_repo }}
+        NEW: ${{ steps.version.outputs.new }}
+      run: |
+        set -euo pipefail
+        [ -n "${SSH_PRIVATE_KEY}" ] || { echo "::error::SSH_PRIVATE_KEY secret (deploy key with write access to ${RELEASE_REPO}) is not set" >&2; exit 1; }
+        mkdir -p ~/.ssh && echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_release && chmod 600 ~/.ssh/id_release
+        ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_release -o IdentitiesOnly=yes"
+        slug=${RELEASE_REPO#https://github.com/}
+        git clone "git@github.com:${slug}.git" "${RUNNER_TEMP}/release"
+        # Modules only, without their tests: the release is what the agent consumes.
+        rsync -a --delete --exclude 'test' --exclude 'test.sh' modules/ "${RUNNER_TEMP}/release/modules/"
+        [ -f LICENSE.txt ] && cp LICENSE.txt "${RUNNER_TEMP}/release/"
+        cd "${RUNNER_TEMP}/release"
+        git config user.name "GitHub Actions" && git config user.email "actions@github.com"
+        git add --all
+        if git diff --cached --quiet; then
+          echo "Nothing to commit, files already match ${NEW}"
+        else
+          git commit -m "Release ${NEW}" -m "Published from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git push
+        fi
+        if git rev-parse -q --verify "refs/tags/${NEW}" >/dev/null; then
+          echo "Tag ${NEW} already exists in ${slug}"
+        else
+          git tag -a "${NEW}" -m "Release ${NEW}"
+          git push origin "${NEW}"
+        fi
+        echo "Published ${NEW} to ${RELEASE_REPO}"

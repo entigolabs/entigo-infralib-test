@@ -1,0 +1,130 @@
+# Reusable workflow for module repositories: provision every environment from
+# the latest release, one job per environment, and test it. The final job
+# gates on all of them, so a release workflow can follow on its success.
+#
+#   on:
+#     schedule: [{cron: '31 3 * * 1-5'}]
+#     workflow_dispatch:
+#   jobs:
+#     stable:
+#       uses: entigolabs/entigo-infralib-test/.github/workflows/module-stable.yaml@main
+#       with:
+#         release_repo: https://github.com/<org>/<repo>-release
+#       secrets: inherit
+#
+# The repository's own modules come from release_repo (the agent takes its
+# latest release); the tests are those of the source repository at its latest
+# release tag, so the two match. Credentials as in module-pull-request.yaml.
+name: Module stable
+
+on:
+  workflow_call:
+    inputs:
+      release_repo:
+        description: git URL the releases of this repository are published to; the agent source of its modules
+        type: string
+        required: true
+      environments:
+        description: comma separated environments to run; empty means every environment with credentials
+        type: string
+        default: ''
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  plan:
+    name: Environments and release
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      matrix: ${{ steps.envs.outputs.matrix }}
+      release: ${{ steps.release.outputs.tag }}
+    env:
+      HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+      HAS_GOOGLE: ${{ secrets.GOOGLE_CREDENTIALS != '' }}
+      HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
+    steps:
+    - name: Latest release of this repository
+      id: release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        tag=$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName --jq .tagName 2>/dev/null || true)
+        [ -n "$tag" ] || { echo "::error::${GITHUB_REPOSITORY} has no release yet; run the release workflow first" >&2; exit 1; }
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "Latest release: $tag"
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.release.outputs.tag }}
+    - name: Select environments
+      id: envs
+      env:
+        ENVIRONMENTS: ${{ inputs.environments }}
+      run: |
+        set -euo pipefail
+        selected=$(./test.sh envs --tsv | while IFS=$'\t' read -r name cloud rest; do
+          if [ -n "${ENVIRONMENTS}" ]; then
+            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
+          fi
+          case "$cloud" in
+            aws) [ "${HAS_AWS}" = true ] && echo "$name" ;;
+            google) [ "${HAS_GOOGLE}" = true ] && echo "$name" ;;
+            oracle) [ "${HAS_ORACLE}" = true ] && echo "$name" ;;
+          esac
+        done | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        echo "Environments: ${selected}"
+        [ "${selected}" != "[]" ] || { echo "::error::no environment has credentials" >&2; exit 1; }
+        echo "matrix={\"environment\":${selected}}" >> "$GITHUB_OUTPUT"
+
+  environment:
+    name: ${{ matrix.environment }}
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      GOOGLE_PROJECT: ${{ secrets.GOOGLE_PROJECT }}
+      GOOGLE_REGION: ${{ secrets.GOOGLE_REGION }}
+      GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.plan.outputs.release }}
+    - name: Wait for other runs on the shared environments
+      uses: softprops/turnstyle@v3
+      with:
+        abort-after-seconds: 3600
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+      with:
+        google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
+        oci_config: ${{ secrets.OCI_CONFIG }}
+        oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+    - name: Provision ${{ matrix.environment }} from ${{ inputs.release_repo }}
+      run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ inputs.release_repo }}
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+      with:
+        environments: ${{ matrix.environment }}
+    - name: Test ${{ matrix.environment }}
+      run: ./test.sh test --env ${{ matrix.environment }}
+    - name: Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-${{ matrix.environment }}
+        path: logs/
+        if-no-files-found: ignore
+
+  stable:
+    name: Stable
+    needs: environment
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+    - run: echo "Release ${{ needs.plan.outputs.release || 'latest' }} is stable on every environment"

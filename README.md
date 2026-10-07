@@ -156,14 +156,18 @@ Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Im
 
 ## Workflows for module repositories
 
-- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time in per-branch steps, builds the kubeconfig for EKS and GKE from each environment's cluster module, destroys the steps afterwards, uploads `logs/`. Credentials and regions via `secrets: inherit` (`AWS_REGION`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`, `OCI_REGION`, `OCI_COMPARTMENT_ID` beside the credential secrets).
+Three reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
+
+- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name), and destroys the steps afterwards.
+- `module-stable.yaml`: one job per environment that provisions the latest release of the repository from `release_repo` and runs the tests of that release; a final `Stable` job gates on all of them.
+- `module-release.yaml`: one job per environment that applies `main` from the repository's git URL and tests it, then a `Release` job that tags main, creates the GitHub release and publishes `modules/` without tests to `release_repo` over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access). The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one; the release repository's tag marks completion so an interrupted publish resumes.
 
 ## Roadmap
 
 In order:
 
 1. Publish the images and run the example repository end to end on AWS; fix what that finds.
-2. Reusable `stable` (provision the latest release from scratch, then test) and `release` (test main, tag, publish OCI + release repository) workflows, one agent run per environment covering every step, release depending on every environment job.
+2. OCI publishing of charts and modules in the release workflow, as entigo-infralib does today.
 3. Nuke of test accounts, shipped with the framework.
 4. Google and Oracle environments in the example.
 5. Version report (`report.sh`) for consumers.

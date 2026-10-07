@@ -214,6 +214,9 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		if err != nil {
 			return nil, err
 		}
+		// A k8s module gets a branch-prefixed application name so it lives
+		// next to the regular step's deployment instead of replacing it.
+		own.Name = home.Module.BranchName(e, opts.StepPrefix)
 		modules := []any{toRaw(own)}
 		// The gateway module a chart chains inputs from must be present in
 		// the step for templating to resolve, as a default that is not applied.

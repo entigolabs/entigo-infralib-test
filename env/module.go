@@ -60,6 +60,17 @@ func (m Module) AgentName(e *Environment) string {
 	return fmt.Sprintf("%s-%s", m.Name, e.Prefix)
 }
 
+// BranchName is the module's name in a per-branch step. A terraform module
+// keeps its name, since the step already separates its state; a k8s module
+// becomes <stepPrefix>-<module>-<prefix>, because the ArgoCD application
+// and its namespace would otherwise collide with the regular step's.
+func (m Module) BranchName(e *Environment, stepPrefix string) string {
+	if !m.IsK8s() {
+		return m.AgentName(e)
+	}
+	return fmt.Sprintf("%s-%s-%s", stepPrefix, m.Name, e.Prefix)
+}
+
 // TestDir is the module's test directory relative to the repository root.
 // Empty for external modules.
 func (m Module) TestDir() string {

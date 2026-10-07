@@ -191,13 +191,16 @@ func TestGenerateModuleStep(t *testing.T) {
 	require.Equal(t, "mart-foo-hello-world", last.Name)
 	require.Equal(t, env.StepTypeArgoCD, last.Type)
 	require.Equal(t, "argocd-exa", last.ArgocdNamespace)
-	// The gateway module rides along with its inputs as a default that is not applied.
-	require.Equal(t, "hello-world-exa=hello-world aws-alb-exa=aws-alb", strings.Join(moduleNames(last), " "))
+	// The k8s module gets a branch-prefixed name so it does not replace the
+	// regular deployment; the gateway module rides along with its inputs as a
+	// default that is not applied, under its regular name.
+	require.Equal(t, "mart-foo-hello-world-exa=hello-world aws-alb-exa=aws-alb", strings.Join(moduleNames(last), " "))
 	require.True(t, last.Modules[1].DefaultModule)
 	require.Equal(t, "public", last.Modules[1].Inputs["global"].(map[string]any)["externalGateway"])
 	p, ok := agent.Find("hello-world")
 	require.True(t, ok)
 	require.Equal(t, "mart-foo-hello-world", p.Step.Name, "Find prefers the per-module step")
+	require.Equal(t, "mart-foo-hello-world-exa", p.Module.Name, "and reports the branch-prefixed application")
 	// Step fields the framework does not model are copied from the home step.
 	raw := readRaw(t, path)
 	steps := raw["steps"].([]any)
