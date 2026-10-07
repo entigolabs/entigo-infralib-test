@@ -16,7 +16,9 @@ runs:
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
-        ./test.sh envs --tsv | while IFS=$'\t' read -r name cloud prefix region zone project compartment cluster; do
+        # awk keeps empty columns apart; bash's read would collapse the tabs
+        # around an empty zone or project and shift the cluster column.
+        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $8}' | while IFS=$'\t' read -r name cloud cluster; do
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
