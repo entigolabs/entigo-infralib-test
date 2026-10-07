@@ -4,9 +4,9 @@
 # Runs the agent and the module tests of a module repository inside the
 # per-cloud test images (entigolabs/entigo-infralib-test-<cloud>). The host
 # needs bash and docker; credentials and the kubeconfig are the executor's and
-# are passed through read-only. Nothing is parsed on the host beyond the
-# clouds named by the files under environments/: every decision is made by
-# the infralib-test command inside the image.
+# are passed through read-only. The host parses nothing: environments and
+# their clouds are read through the infralib-test command in the cli image,
+# and the agent and the tests run in the per-cloud images.
 #
 # This file ships inside the images under /opt/infralib-test/scripts and is
 # extracted by the consumer repository's test.sh (see templates/test.sh).
@@ -130,11 +130,6 @@ mkdir -p agents logs
 IMAGE_PREFIX="${INFRALIB_TEST_IMAGE_PREFIX:-entigolabs/entigo-infralib-test-}"
 image_for() { echo "${IMAGE_PREFIX}$1:${TAG}"; }
 
-# The clouds of the environment files (environments/<cloud>_<prefix>.yaml)
-# decide which images are needed. The host never reads the files themselves.
-mapfile -t ALL_CLOUDS < <(for f in environments/*.yaml; do b=$(basename "$f" .yaml); case $b in aws_*|google_*|oracle_*) echo "${b%%_*}";; esac; done | sort -u)
-[ ${#ALL_CLOUDS[@]} -gt 0 ] || die "environments/ holds no <cloud>_<prefix>.yaml (cloud aws|google|oracle)"
-
 PULLED=()
 pull() {
   local image=$1
@@ -220,11 +215,11 @@ run_in() {
 
 # ---------------------------------------------------------------- environments
 # ENV_ROWS holds "name cloud prefix region zone project compartment cluster"
-# for every environment of the repository, read through the image.
+# for every environment of the repository, read through the cli image, which
+# is also where the orchestrator itself came from.
 load_environments() {
-  local cloud="${ALL_CLOUDS[0]}"
-  pull "$(image_for "$cloud")"
-  mapfile -t ENV_ROWS < <(run_in "$cloud" -- infralib-test envs -tsv)
+  pull "$(image_for cli)"
+  mapfile -t ENV_ROWS < <(run_in cli -- infralib-test envs -tsv)
   [ ${#ENV_ROWS[@]} -gt 0 ] || die "infralib-test envs returned nothing"
 }
 env_field() { # env_field NAME INDEX
@@ -279,7 +274,7 @@ step_prefix() {
 # Writes agents/<env>/config.yaml for the selected environments and fills
 # STEPS_<env> with the steps the agent should run ("all", or a list).
 generate() {
-  local cloud e args=()
+  local e args=()
   for e in "${ENVS[@]}"; do args+=(-env "$e"); done
   if [ -n "$SELF_SOURCE" ]; then
     args+=(-source "$SELF_SOURCE")
@@ -289,8 +284,6 @@ generate() {
     for m in "${MODULES[@]}"; do args+=(-module "$(module_source "$m")"); done
     if [ "$IN_PLACE" = true ]; then args+=(-in-place); else args+=(-step-prefix "$(step_prefix)"); fi
   fi
-  cloud=$(env_cloud "${ENVS[0]}")
-  pull "$(image_for "$cloud")"
   log "Generating agent configurations for ${ENVS[*]}"
   local line
   SELECTED=()
@@ -300,7 +293,7 @@ generate() {
       skip) warn "Skipping $1: none of the modules has an input for it" ;;
       *) declare -g "STEPS_${1//-/_}=$2"; SELECTED+=("$1"); echo "    $1: steps $2" >&2 ;;
     esac
-  done < <(run_in "$cloud" -- infralib-test generate "${args[@]}")
+  done < <(run_in cli -- infralib-test generate "${args[@]}")
   ENVS=("${SELECTED[@]}")
 }
 
@@ -386,7 +379,7 @@ run_tests() {
 case $COMMAND in
   envs)
     load_environments
-    if [ "$TSV" = true ]; then printf '%s\n' "${ENV_ROWS[@]}"; else run_in "${ALL_CLOUDS[0]}" -- infralib-test envs; fi
+    if [ "$TSV" = true ]; then printf '%s\n' "${ENV_ROWS[@]}"; else run_in cli -- infralib-test envs; fi
     ;;
   shell)
     [ ${#MODULES[@]} -eq 1 ] || die "usage: test.sh shell ENV"

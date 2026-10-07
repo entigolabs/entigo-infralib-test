@@ -24,3 +24,5 @@ jobs:
     - name: shellcheck
       run: |
         docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable -S warning scripts/*.sh templates/*.sh
+    - name: cli image builds
+      run: docker build -q -f images/cli/Dockerfile -t infralib-test-cli:ci . >/dev/null && docker run --rm infralib-test-cli:ci -h | head -1

@@ -6,7 +6,7 @@ A module repository keeps its tests as ordinary Go tests next to each module. Th
 
 - the Go packages those tests import (`env`, `tf`, `k8s`, `aws`, `google`, `oracle`, `retry`, `random`, `logger`),
 - `infralib-test`, the command that turns the agent configurations under `environments/` into runnable ones and runs the module tests with readable output,
-- per-cloud container images `entigolabs/entigo-infralib-test-{aws,google,oracle}` that hold the agent, the cloud tooling, a Go toolchain and warmed caches,
+- per-cloud container images `entigolabs/entigo-infralib-test-{aws,google,oracle}` that hold the agent, the cloud tooling, a Go toolchain and warmed caches, plus the small `entigolabs/entigo-infralib-test-cli` image with the command and the scripts that a module repository bootstraps from,
 - a host orchestrator (`scripts/infralib-test.sh`) that runs the agent and the tests from those images with nothing but bash and docker on the host,
 - reusable GitHub workflows a module repository calls.
 
@@ -135,9 +135,9 @@ modules/k8s/hello-world/test.sh        the same, from the module's directory (te
 ./test.sh --help
 ```
 
-`test.sh` is a 30-line bootstrap committed in the module repository (`templates/test.sh`). It pins `INFRALIB_TEST_VERSION`, extracts `scripts/` from the matching image into the git-ignored `.infralib-test/` and runs the orchestrator, which
+`test.sh` is a 20-line bootstrap committed in the module repository (`templates/test.sh`), and `modules/<type>/<name>/test.sh` a 7-line hand-over to it (`templates/module-test.sh`). Neither knows anything about clouds or environments: the bootstrap pins `INFRALIB_TEST_VERSION`, extracts `scripts/` from the `entigo-infralib-test-cli` image of that version into the git-ignored `.infralib-test/` and runs the orchestrator, which
 
-1. reads the environments through `infralib-test envs` in the image,
+1. reads the environments and their clouds through `infralib-test envs` in the cli image,
 2. selects the environments: the ones given with `--env`, otherwise every environment whose cloud has credentials and region settings in the shell,
 3. writes `agents/<env>/config.yaml` with `infralib-test generate`,
 4. runs `ei-agent run --pipeline-type=local` once per environment in parallel from the per-cloud image, with the checkout mounted at `/conf` as the repository's own source,
@@ -149,7 +149,7 @@ The agent runs from the test image itself, so agent, tofu, kubectl and the tests
 
 ## Images
 
-`images/<cloud>/Dockerfile` builds `entigolabs/entigo-infralib-test-<cloud>` from the repository root on top of `entigolabs/entigo-infralib-<cloud>:latest`, adding Go, the `infralib-test` command, `scripts/`, `templates/` and this module's source under `/opt/infralib-test`, and warms the Go module and build caches with the packages a test of that cloud imports. A dependency the cache lacks is downloaded at run time (`GOFLAGS=-mod=mod`); the cache catches up on the next build. `GOTOOLCHAIN=local` means a Go bump is a `GO_VERSION` bump here, never a download in a test run.
+`images/cli/Dockerfile` builds the 20 MB `entigolabs/entigo-infralib-test-cli` from alpine with the command, `scripts/` and `templates/`. `images/<cloud>/Dockerfile` builds `entigolabs/entigo-infralib-test-<cloud>` from the repository root on top of `entigolabs/entigo-infralib-<cloud>:latest`, adding Go, the `infralib-test` command, `scripts/`, `templates/` and this module's source under `/opt/infralib-test`, and warms the Go module and build caches with the packages a test of that cloud imports. A dependency the cache lacks is downloaded at run time (`GOFLAGS=-mod=mod`); the cache catches up on the next build. `GOTOOLCHAIN=local` means a Go bump is a `GO_VERSION` bump here, never a download in a test run.
 
 Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Images` workflow needs `DOCKER_USERNAME` and `DOCKER_PASSWORD`.
 

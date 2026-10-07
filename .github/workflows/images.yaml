@@ -1,4 +1,4 @@
-# Builds the per-cloud test images from this repository:
+# Builds the cli image and the per-cloud test images from this repository:
 #   pull request  -> entigolabs/entigo-infralib-test-<cloud>:dev
 #   push to main  -> entigolabs/entigo-infralib-test-<cloud>:latest
 #   tag vX.Y.Z    -> entigolabs/entigo-infralib-test-<cloud>:vX.Y.Z (and latest)
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cloud: [aws, google, oracle]
+        cloud: [cli, aws, google, oracle]
     permissions:
       contents: read
     steps:
