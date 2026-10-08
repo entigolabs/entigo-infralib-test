@@ -23,12 +23,18 @@ runs:
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
           [ -n "$cluster" ] || continue
+          # A cluster that does not exist (yet) is a warning, not a failure:
+          # terraform module tests need no cluster, and a k8s test that does
+          # fails on its own with the command that would have created the
+          # context.
           case "$cloud" in
             aws)
               [ -n "${AWS_ACCESS_KEY_ID:-}" ] || continue
-              aws eks update-kubeconfig --region "${AWS_REGION}" --name "$cluster" ;;
+              aws eks update-kubeconfig --region "${AWS_REGION}" --name "$cluster" \
+                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             google)
               [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || continue
-              gcloud container clusters get-credentials "$cluster" --region "${GOOGLE_REGION}" --project "${GOOGLE_PROJECT}" ;;
+              gcloud container clusters get-credentials "$cluster" --region "${GOOGLE_REGION}" --project "${GOOGLE_PROJECT}" \
+                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac
         done
