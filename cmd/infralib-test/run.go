@@ -98,13 +98,18 @@ func runCommand(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Testing %d modules against %s\n", len(modules), strings.Join(names, ", "))
 
+	testDirs := make([]string, 0, len(modules))
+	for _, m := range modules {
+		testDirs = append(testDirs, "./"+filepath.ToSlash(m.TestDir()))
+	}
+	if err := restorePrunedModules(config.Root(), testDirs); err != nil {
+		return err
+	}
 	goArgs := []string{"test", "-json", "-count=1", "-timeout", timeout.String(), "-p", fmt.Sprint(*parallel)}
 	if *runFilter != "" {
 		goArgs = append(goArgs, "-run", *runFilter)
 	}
-	for _, m := range modules {
-		goArgs = append(goArgs, "./"+filepath.ToSlash(m.TestDir()))
-	}
+	goArgs = append(goArgs, testDirs...)
 	cmd := exec.Command("go", goArgs...)
 	cmd.Dir = config.Root()
 	cmd.Env = append(os.Environ(),
