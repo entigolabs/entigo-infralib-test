@@ -1,0 +1,152 @@
+# Reusable workflow for module repositories: delete everything in the test
+# accounts that the repository's nuke/<cloud>.yaml files do not keep, one job
+# per cloud, so that a single cloud can be nuked by hand. The next stable run
+# then provisions the environments from scratch.
+#
+#   on:
+#     schedule: [{cron: '0 16 * * *'}]
+#     workflow_dispatch:
+#       inputs:
+#         cloud: {type: choice, options: [all, aws, google, oracle], default: all}
+#         dry_run: {type: boolean, default: false}
+#   jobs:
+#     nuke:
+#       uses: entigolabs/entigo-infralib-test/.github/workflows/module-nuke.yaml@main
+#       with:
+#         clouds: ${{ inputs.cloud == 'all' && '' || inputs.cloud }}
+#         dry_run: ${{ inputs.dry_run || false }}
+#       secrets: inherit
+#
+# Credentials as in module-pull-request.yaml; the clouds with credentials
+# are the ones that run. Oracle also needs the environment prefixes, taken
+# from environments/oracle_<prefix>.yaml unless `prefixes` is given. With a
+# SLACK_WEBHOOK_URL secret (plus SLACK_USERNAME, SLACK_ICON_EMOJI) a failure
+# is posted to Slack, and so is the start of a run somebody dispatched.
+name: Module nuke
+
+on:
+  workflow_call:
+    inputs:
+      clouds:
+        description: comma separated clouds to nuke; empty means every cloud with credentials
+        type: string
+        default: ''
+      prefixes:
+        description: comma separated environment prefixes for Oracle; empty means the ones of environments/oracle_*.yaml
+        type: string
+        default: ''
+      dry_run:
+        description: only list what would be deleted
+        type: boolean
+        default: false
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  plan:
+    name: Clouds
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      matrix: ${{ steps.clouds.outputs.matrix }}
+      prefixes: ${{ steps.clouds.outputs.prefixes }}
+    env:
+      HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+      HAS_GOOGLE: ${{ secrets.GOOGLE_CREDENTIALS != '' }}
+      HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Select clouds
+      id: clouds
+      env:
+        CLOUDS: ${{ inputs.clouds }}
+        PREFIXES: ${{ inputs.prefixes }}
+      run: |
+        set -euo pipefail
+        selected=$(for cloud in aws google oracle; do
+          if [ -n "${CLOUDS}" ]; then
+            case ",${CLOUDS}," in *",${cloud},"*) ;; *) continue ;; esac
+          fi
+          [ -f "nuke/${cloud}.yaml" ] || { echo "::notice::no nuke/${cloud}.yaml, ${cloud} is not nuked" >&2; continue; }
+          case "$cloud" in
+            aws) [ "${HAS_AWS}" = true ] && echo "$cloud" ;;
+            google) [ "${HAS_GOOGLE}" = true ] && echo "$cloud" ;;
+            oracle) [ "${HAS_ORACLE}" = true ] && echo "$cloud" ;;
+          esac
+        done | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        echo "Clouds: ${selected}"
+        [ "${selected}" != "[]" ] || { echo "::error::no selected cloud has both credentials and a nuke/<cloud>.yaml" >&2; exit 1; }
+        echo "matrix={\"cloud\":${selected}}" >> "$GITHUB_OUTPUT"
+        if [ -z "${PREFIXES}" ]; then
+          PREFIXES=$(ls environments/oracle_*.yaml 2>/dev/null | sed -E 's#.*/oracle_(.*)\.yaml#\1#' | paste -sd, -)
+        fi
+        echo "Oracle prefixes: ${PREFIXES:-none}"
+        echo "prefixes=${PREFIXES}" >> "$GITHUB_OUTPUT"
+
+  nuke:
+    name: ${{ matrix.cloud }}
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      GOOGLE_PROJECT: ${{ secrets.GOOGLE_PROJECT }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+      HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+    steps:
+    - name: Slack message about a nuke somebody started
+      if: github.event_name == 'workflow_dispatch' && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: '#EBEB00'
+        SLACK_MESSAGE: "Nuking of the ${{ github.repository }} ${{ matrix.cloud }} test account started${{ inputs.dry_run && ' (dry run)' || '' }}"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
+        MSG_MINIMAL: actions url
+    - uses: actions/checkout@v4
+    - name: Framework scripts
+      # The scripts of the framework version this workflow belongs to.
+      env:
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: echo "ref=${WORKFLOW_REF##*@}" >> "$GITHUB_OUTPUT"
+      id: framework
+    - uses: actions/checkout@v4
+      with:
+        repository: entigolabs/entigo-infralib-test
+        ref: ${{ steps.framework.outputs.ref }}
+        path: .infralib-test/framework
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+      if: matrix.cloud == 'oracle'
+      with:
+        oci_config: ${{ secrets.OCI_CONFIG }}
+        oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+    - name: Nuke ${{ matrix.cloud }}
+      env:
+        PREFIXES: ${{ needs.plan.outputs.prefixes }}
+        DRY_RUN: ${{ inputs.dry_run }}
+      run: |
+        args=()
+        [ "${DRY_RUN}" = true ] && args+=(--dry-run)
+        if [ "${{ matrix.cloud }}" = oracle ]; then
+          IFS=, read -r -a prefixes <<<"${PREFIXES}"
+          for p in "${prefixes[@]}"; do [ -n "$p" ] && args+=(--prefix "$p"); done
+        fi
+        .infralib-test/framework/scripts/nuke.sh ${{ matrix.cloud }} "${args[@]}"
+    - name: Slack message about the failure
+      if: failure() && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: failure
+        SLACK_MESSAGE: "Failed to nuke the ${{ github.repository }} ${{ matrix.cloud }} test account"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""

@@ -176,7 +176,7 @@ Tags: pull request `dev`; main `<sha>` and `main`. Versions are made by the `Rel
 
 ## Workflows for module repositories
 
-Three reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
+Five reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
 
 - `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name); a module with `pin_step` is applied to its regular step instead and such a run waits for every other run of the workflow first (see `test/module.yaml`). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
 - `module-main.yaml`: after a merge to main, one job per environment applies the modules the push changed under their regular names (`--in-place`) and runs their tests. Only those modules are applied: a module that did not change is left as it is, so a pinned module someone is still working on in a pull request is not put back to main by an unrelated merge. When the push changed no module (an environment file, say) every step is applied and every module is tested. The modules come from the repository's `main` branch over git, as in the release workflow, never from the checkout: a mounted path becomes a `file://` source in the ArgoCD Applications that only lives as long as the repo-server pod that received it. Paths are for pull requests and local runs. Nothing is tagged.
@@ -186,6 +186,12 @@ Three reusable workflows, called with `secrets: inherit`. Credentials and region
   - `release_repo`: `modules/` without tests pushed over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access), its tag marking completion. This is how entigo-infralib-release is made; it predates OCI and is kept for compatibility.
 
   An interrupted run resumes whatever destination is missing on the next run.
+
+## Nuking the test accounts
+
+Test environments are thrown away daily and provisioned again by the stable run, so that nothing accumulates and a fresh install is proven every day. `scripts/nuke.sh <cloud>` deletes everything in a cloud's test account that `nuke/<cloud>.yaml` in the repository does not keep, running the nuke tool of the cloud as a container: aws-nuke, gcp-nuke or oci-nuke, versions pinned in the script. The configuration files are in the tools' own formats: which account or project, which regions, and the filters for what stays (the CI user and its keys, the DNS zones, the state keys). For AWS the script first stops the configuration recorders and empties every bucket, since aws-nuke cannot delete a bucket with versions in it; Oracle needs the environment prefixes, since its tenancy-scoped listers find nothing without one. `--dry-run` only lists.
+
+`module-nuke.yaml` is the reusable workflow: one job per cloud with credentials and a `nuke/<cloud>.yaml`, so that one cloud can be nuked by hand with the `clouds` input; `dry_run` to rehearse. It posts failures to Slack when a `SLACK_WEBHOOK_URL` secret exists, and announces runs somebody dispatched. The workflow checks out the framework at its own version for the script, so a repository needs no `test.sh` to nuke.
 
 ## Roadmap
 
