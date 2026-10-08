@@ -37,3 +37,16 @@ func TestAlignGoModNoops(t *testing.T) {
 		require.Equal(t, string(before), string(after), "%+v", c)
 	}
 }
+
+func TestWantedFrameworkVersion(t *testing.T) {
+	t.Setenv("INFRALIB_TEST_VERSION", "v0.7.0")
+	require.Equal(t, "v0.7.0", wantedFrameworkVersion(), "a pinned release tag wins over the baked version")
+	t.Setenv("INFRALIB_TEST_VERSION", "latest")
+	require.Equal(t, version, wantedFrameworkVersion(), "a mutable tag falls back to the baked version")
+	t.Setenv("INFRALIB_TEST_VERSION", "")
+	require.Equal(t, version, wantedFrameworkVersion())
+	require.True(t, isSemver("v1.24.9"))
+	require.False(t, isSemver("1.24.9"))
+	require.False(t, isSemver("v1.24"))
+	require.False(t, isSemver("dev"))
+}

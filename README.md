@@ -154,13 +154,13 @@ The agent runs from the test image itself, so agent, tofu, kubectl and the tests
 
 ## One version pin
 
-`INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. Each image carries the framework version it was built from (`infralib-test version`), and `infralib-test run` aligns the repository's `go.mod` to it before testing, with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
+`INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. `infralib-test run` aligns the repository's `go.mod` to that tag before testing (or, for `dev`, `main` and `<sha>` images, to the commit baked into the image, see `infralib-test version`), with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
 
 ## Images
 
 `images/cli/Dockerfile` builds the 20 MB `entigolabs/entigo-infralib-test-cli` from alpine with the command, `scripts/` and `templates/`. `images/<cloud>/Dockerfile` builds `entigolabs/entigo-infralib-test-<cloud>` from the repository root on top of `entigolabs/entigo-infralib-<cloud>:latest`, adding Go, the `infralib-test` command, `scripts/`, `templates/` and this module's source under `/opt/infralib-test`, and warms the Go module and build caches with the packages a test of that cloud imports. A dependency the cache lacks is downloaded at run time (`GOFLAGS=-mod=mod`); the cache catches up on the next build. `GOTOOLCHAIN=local` means a Go bump is a `GO_VERSION` bump here, never a download in a test run.
 
-Tags: pull request `dev`, main `latest`, git tag `vX.Y.Z` plus `latest`. The `Images` workflow needs `DOCKER_USERNAME` and `DOCKER_PASSWORD`.
+Tags: pull request `dev`; main `<sha>` and `main`. Versions are made by the `Release` workflow (manual dispatch): it requires green `Go` and `Images` runs for the main commit, re-tags that commit's `<sha>` images as `vX.Y.Z` and `latest` without rebuilding, then creates the git tag and the GitHub release. A version tag therefore never exists without its images, and `latest` only moves on a release. The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one. Both workflows need `DOCKER_USERNAME` and `DOCKER_PASSWORD`.
 
 ## Workflows for module repositories
 

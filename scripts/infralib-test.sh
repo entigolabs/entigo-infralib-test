@@ -172,7 +172,7 @@ require_cloud() {
 base_args() {
   local cloud=$1 role=${2:-test}
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
-        -e INFRALIB_ROOT=/conf -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
+        -e INFRALIB_ROOT=/conf -e "INFRALIB_TEST_VERSION=$TAG" -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
   mkdir -p .infralib-test/plugin-cache
   local kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
   if [ "$role" = test ] && [ -f "$kubeconfig" ]; then

@@ -1,7 +1,11 @@
 # Builds the cli image and the per-cloud test images from this repository:
 #   pull request  -> entigolabs/entigo-infralib-test-<cloud>:dev
-#   push to main  -> entigolabs/entigo-infralib-test-<cloud>:latest
-#   tag vX.Y.Z    -> entigolabs/entigo-infralib-test-<cloud>:vX.Y.Z (and latest)
+#   push to main  -> entigolabs/entigo-infralib-test-<cloud>:<sha> and :main
+#
+# Versions and latest are not built here: the Release workflow re-tags the
+# <sha> images of a main commit once their builds have succeeded, so a
+# version tag never exists without its images and latest only moves on a
+# release.
 #
 # The images build FROM entigolabs/entigo-infralib-<cloud>:latest, the agent
 # images published by entigo-infralib, so a new agent or tool version reaches
@@ -12,7 +16,6 @@ name: Images
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -40,8 +43,7 @@ jobs:
         name="entigolabs/entigo-infralib-test-${{ matrix.cloud }}"
         case "${GITHUB_EVENT_NAME}:${GITHUB_REF}" in
           pull_request:*)        tags="${name}:dev" ;;
-          *:refs/tags/v*)        tags="${name}:${GITHUB_REF_NAME},${name}:latest" ;;
-          *:refs/heads/main)     tags="${name}:latest" ;;
+          *:refs/heads/main)     tags="${name}:${GITHUB_SHA},${name}:main" ;;
           *) echo "Refusing to publish from ${GITHUB_REF}" >&2; exit 1 ;;
         esac
         echo "tags=${tags}" >> "$GITHUB_OUTPUT"
@@ -69,7 +71,7 @@ jobs:
         push: true
         tags: ${{ steps.tags.outputs.tags }}
         build-args: |
-          VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          VERSION=${{ github.sha }}
         provenance: mode=max
         sbom: true
         cache-from: type=gha,scope=${{ matrix.cloud }}

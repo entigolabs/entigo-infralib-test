@@ -87,7 +87,7 @@ func runCommand(args []string) error {
 		return fmt.Errorf("%s has no go.mod; module tests need one that requires %s", config.Root(), frameworkModule)
 	}
 	if !*noAlign {
-		if err := alignGoMod(config.Root(), version); err != nil {
+		if err := alignGoMod(config.Root(), wantedFrameworkVersion()); err != nil {
 			return err
 		}
 	}
@@ -326,6 +326,33 @@ func modulePath(root string) string {
 		}
 	}
 	return ""
+}
+
+// wantedFrameworkVersion is the version go.mod should require: the semver tag
+// the repository pinned in test.sh (INFRALIB_TEST_VERSION), when it is one,
+// since a released image is a re-tagged commit build whose baked version is
+// the sha; otherwise the version baked into this binary.
+func wantedFrameworkVersion() string {
+	if pinned := os.Getenv("INFRALIB_TEST_VERSION"); isSemver(pinned) {
+		return pinned
+	}
+	return version
+}
+
+func isSemver(v string) bool {
+	if !strings.HasPrefix(v, "v") {
+		return false
+	}
+	parts := strings.Split(v[1:], ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // alignGoMod makes the repository's go.mod require the framework at the

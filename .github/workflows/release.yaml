@@ -1,0 +1,92 @@
+# Releases the framework the way entigo-infralib releases: nothing is tagged
+# until the images of the exact main commit have been built and pushed. The
+# <sha> images that the Images workflow produced for main are re-tagged as
+# vX.Y.Z and latest (same digests, no rebuild), then the git tag and the
+# GitHub release are created. The version is release_version.txt plus .0 when
+# its major.minor moved, else the latest release's patch plus one.
+name: Release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+
+    - name: Require green Go and Images runs for this commit
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        for wf in Go Images; do
+          conclusion=$(gh run list --workflow "$wf" --commit "$GITHUB_SHA" --branch main --limit 1 --json conclusion --jq '.[0].conclusion // "none"')
+          echo "$wf for $GITHUB_SHA: $conclusion"
+          [ "$conclusion" = success ] || { echo "::error::$wf has not succeeded for $GITHUB_SHA" >&2; exit 1; }
+        done
+        for name in cli aws google oracle; do
+          docker manifest inspect "entigolabs/entigo-infralib-test-$name:$GITHUB_SHA" >/dev/null 2>&1 \
+            || { echo "::error::entigolabs/entigo-infralib-test-$name:$GITHUB_SHA is not in the registry" >&2; exit 1; }
+        done
+
+    - name: Decide the version
+      id: version
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+        wanted=$(tr -d '[:space:]' < release_version.txt)
+        if [ -z "$latest" ]; then
+          new="v${wanted}.0"
+        else
+          [ "$(git rev-list -n1 "$latest")" != "$GITHUB_SHA" ] || { echo "::error::$latest already points at $GITHUB_SHA; nothing to release" >&2; exit 1; }
+          major_minor=$(echo "$latest" | sed -E 's/^v([0-9]+\.[0-9]+)\.[0-9]+$/\1/')
+          patch=$(echo "$latest" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)$/\1/')
+          if [ "$major_minor" = "$wanted" ]; then new="v${major_minor}.$((patch + 1))"; else new="v${wanted}.0"; fi
+        fi
+        echo "latest=${latest:-none} new=${new}"
+        { echo "new=$new"; echo "latest=$latest"; } >> "$GITHUB_OUTPUT"
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Tag the images of this commit as ${{ steps.version.outputs.new }} and latest
+      env:
+        NEW: ${{ steps.version.outputs.new }}
+      run: |
+        set -euo pipefail
+        for name in cli aws google oracle; do
+          image="entigolabs/entigo-infralib-test-$name"
+          docker buildx imagetools create -t "$image:$NEW" -t "$image:latest" "$image:$GITHUB_SHA"
+          echo "$image:$NEW -> $(docker buildx imagetools inspect "$image:$NEW" --format '{{json .Manifest.Digest}}')"
+        done
+
+    - name: Tag and create the GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NEW: ${{ steps.version.outputs.new }}
+        LATEST: ${{ steps.version.outputs.latest }}
+      run: |
+        set -euo pipefail
+        git config user.name "GitHub Actions" && git config user.email "actions@github.com"
+        git tag -a "$NEW" -m "Release $NEW"
+        git push origin "$NEW"
+        notes_args=(--generate-notes)
+        [ -n "$LATEST" ] && notes_args+=(--notes-start-tag "$LATEST")
+        gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --latest \
+          --notes "Images: entigolabs/entigo-infralib-test-{cli,aws,google,oracle}:$NEW (built from $GITHUB_SHA)"
