@@ -148,6 +148,10 @@ With module arguments each module is applied in a step named `<step-prefix>-<mod
 
 The agent runs from the test image itself, so agent, tofu, kubectl and the tests always come from one image. `INFRALIB_AGENT_IMAGE` overrides that for pre-release agents.
 
+## One version pin
+
+`INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. Each image carries the framework version it was built from (`infralib-test version`), and `infralib-test run` aligns the repository's `go.mod` to it before testing, with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
+
 ## Images
 
 `images/cli/Dockerfile` builds the 20 MB `entigolabs/entigo-infralib-test-cli` from alpine with the command, `scripts/` and `templates/`. `images/<cloud>/Dockerfile` builds `entigolabs/entigo-infralib-test-<cloud>` from the repository root on top of `entigolabs/entigo-infralib-<cloud>:latest`, adding Go, the `infralib-test` command, `scripts/`, `templates/` and this module's source under `/opt/infralib-test`, and warms the Go module and build caches with the packages a test of that cloud imports. A dependency the cache lacks is downloaded at run time (`GOFLAGS=-mod=mod`); the cache catches up on the next build. `GOTOOLCHAIN=local` means a Go bump is a `GO_VERSION` bump here, never a download in a test run.

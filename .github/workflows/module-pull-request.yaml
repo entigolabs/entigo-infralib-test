@@ -124,6 +124,16 @@ jobs:
         environments: ${{ inputs.environments }}
     - name: Test ${{ matrix.module }}
       run: ./test.sh ${{ steps.envs.outputs.args }} ${{ matrix.module }}
+    - name: go.mod matches the framework version of test.sh
+      # The test run aligns go.mod to the image's framework version; a diff
+      # here means the framework was bumped in test.sh without committing the
+      # go.mod and go.sum that running the tests once would have produced.
+      run: |
+        if ! git diff --quiet -- go.mod go.sum; then
+          git --no-pager diff -- go.mod
+          echo "::error::go.mod/go.sum are behind the framework version in test.sh: run ./test.sh once and commit go.mod and go.sum" >&2
+          exit 1
+        fi
     - name: Logs
       if: always()
       uses: actions/upload-artifact@v4

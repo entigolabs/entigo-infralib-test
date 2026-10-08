@@ -12,12 +12,22 @@ import (
 	"os"
 )
 
+// version is the framework version this binary and its image were built
+// from: a tag such as v0.6.1, or a commit sha for images built from a branch.
+// Set with -ldflags "-X main.version=...". The run command aligns the module
+// repository's go.mod to it so the image's warmed Go cache always matches.
+var version = "dev"
+
+// frameworkModule is the Go module path module tests import.
+const frameworkModule = "github.com/entigolabs/entigo-infralib-test"
+
 const usage = `usage: infralib-test <command> [flags]
 
 commands:
   envs       list the environments of the repository
   generate   write agent configurations under agents/
   run        run module tests with go test and summarise the result
+  version    print the framework version of this image
 
 Run "infralib-test <command> -h" for the flags of a command.
 `
@@ -35,6 +45,9 @@ func main() {
 		err = generateCommand(os.Args[2:])
 	case "run":
 		err = runCommand(os.Args[2:])
+	case "version":
+		fmt.Println(version)
+		return
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return

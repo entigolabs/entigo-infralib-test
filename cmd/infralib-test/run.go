@@ -53,6 +53,7 @@ func runCommand(args []string) error {
 	parallel := fs.Int("parallel", 4, "packages compiled and run in parallel (go test -p)")
 	runFilter := fs.String("run", "", "regular expression passed to go test -run")
 	verbose := fs.Bool("verbose", false, "stream every test's output instead of only failures")
+	noAlign := fs.Bool("no-align", false, "do not align go.mod's framework version to this image's version")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: infralib-test run [flags] [module dir...]\n\nModule dirs are relative to the repository root, e.g. modules/aws/vpc. Without any, every module that has tests and is part of a selected environment runs.\n\n")
 		fs.PrintDefaults()
@@ -83,7 +84,12 @@ func runCommand(args []string) error {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(config.Root(), "go.mod")); err != nil {
-		return fmt.Errorf("%s has no go.mod; module tests need one that requires github.com/entigolabs/entigo-infralib-test", config.Root())
+		return fmt.Errorf("%s has no go.mod; module tests need one that requires %s", config.Root(), frameworkModule)
+	}
+	if !*noAlign {
+		if err := alignGoMod(config.Root(), version); err != nil {
+			return err
+		}
 	}
 
 	names := make([]string, 0, len(environments))
@@ -320,4 +326,60 @@ func modulePath(root string) string {
 		}
 	}
 	return ""
+}
+
+// alignGoMod makes the repository's go.mod require the framework at the
+// version this image was built from, so tests compile against the framework
+// that ships in the image and the image's warmed Go cache matches. The
+// change is left in the working tree for the developer to commit; CI fails
+// when that commit is missing. A "dev" build (no version baked in) aligns
+// nothing.
+func alignGoMod(root, want string) error {
+	if want == "" || want == "dev" {
+		return nil
+	}
+	have, err := frameworkRequire(root)
+	if err != nil {
+		return err
+	}
+	if have == want || strings.Contains(have, want) {
+		// Equal, or a pseudo-version that already points at this commit.
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Aligning go.mod: %s %s -> %s (this image's framework version); commit go.mod and go.sum\n", frameworkModule, have, want)
+	for _, args := range [][]string{
+		{"mod", "edit", "-require", frameworkModule + "@" + want},
+		{"mod", "tidy"},
+	} {
+		cmd := exec.Command("go", args...)
+		cmd.Dir = root
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("go %s: %w", strings.Join(args, " "), err)
+		}
+	}
+	return nil
+}
+
+// frameworkRequire returns the version go.mod requires the framework at.
+func frameworkRequire(root string) (string, error) {
+	cmd := exec.Command("go", "mod", "edit", "-json")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go mod edit -json: %w", err)
+	}
+	var mod struct {
+		Require []struct{ Path, Version string }
+	}
+	if err := json.Unmarshal(out, &mod); err != nil {
+		return "", fmt.Errorf("go.mod: %w", err)
+	}
+	for _, r := range mod.Require {
+		if r.Path == frameworkModule {
+			return r.Version, nil
+		}
+	}
+	return "", fmt.Errorf("go.mod does not require %s", frameworkModule)
 }
