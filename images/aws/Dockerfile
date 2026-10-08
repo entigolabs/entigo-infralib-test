@@ -39,9 +39,10 @@ RUN wget --no-verbose -O go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${TARGE
     && tar -C /usr/local -xzf go.tgz && rm go.tgz \
     && rm -rf /usr/local/go/test /usr/local/go/doc /usr/local/go/misc
 COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
-COPY scripts/ /opt/infralib-test/scripts/
-COPY templates/ /opt/infralib-test/templates/
-COPY . /opt/infralib-test/src/
+# Only the Go sources feed the cache warming, so a change to scripts or docs
+# does not recompile everything.
+COPY go.mod go.sum /opt/infralib-test/src/
+COPY aws google oracle k8s env tf logger random retry cmd /opt/infralib-test/src/
 # Warm the module and build caches with what a aws module test resolves:
 # the framework packages of this cloud, the Kubernetes client and testify.
 RUN cd /opt/infralib-test/src \
@@ -50,5 +51,7 @@ RUN cd /opt/infralib-test/src \
     && go list -test -deps ./k8s/... ./aws/... >/dev/null \
     && find /go/pkg/mod -type f -name examples-1.json -delete \
     && chmod -R a+rwX /go
+COPY scripts/ /opt/infralib-test/scripts/
+COPY templates/ /opt/infralib-test/templates/
 USER 1000
 WORKDIR /app

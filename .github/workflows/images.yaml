@@ -61,7 +61,11 @@ jobs:
       with:
         context: .
         file: images/${{ matrix.cloud }}/Dockerfile
-        platforms: linux/amd64,linux/arm64
+        # amd64 only for now: the cloud images warm the Go build cache by
+        # compiling inside the image, and under QEMU that made an arm64 build
+        # take 20 minutes. arm64 comes back with native arm runners per
+        # platform and a manifest merge, not with emulation.
+        platforms: linux/amd64
         push: true
         tags: ${{ steps.tags.outputs.tags }}
         build-args: |
