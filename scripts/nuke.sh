@@ -25,7 +25,7 @@ set -euo pipefail
 
 AWS_NUKE_IMAGE=${AWS_NUKE_IMAGE:-ghcr.io/ekristen/aws-nuke:v3.48.2}
 GCP_NUKE_IMAGE=${GCP_NUKE_IMAGE:-taivox/gcp-nuke:v0.0.5}
-OCI_NUKE_IMAGE=${OCI_NUKE_IMAGE:-ghcr.io/entigolabs/oci-nuke:0.1.10}
+OCI_NUKE_IMAGE=${OCI_NUKE_IMAGE:-ghcr.io/entigolabs/oci-nuke:0.1.12}
 # The aws CLI for the AWS preparation when the host has none.
 AWS_CLI_IMAGE=${AWS_CLI_IMAGE:-entigolabs/entigo-infralib-test-aws:${INFRALIB_TEST_VERSION:-latest}}
 NUKE_ATTEMPTS=${NUKE_ATTEMPTS:-2}
