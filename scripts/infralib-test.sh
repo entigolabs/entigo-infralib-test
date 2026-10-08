@@ -301,6 +301,26 @@ generate() {
     esac
   done < <(run_in cli -- infralib-test generate "${args[@]}")
   ENVS=("${SELECTED[@]}")
+  show_configs
+}
+
+# show_configs prints the agent configuration of every selected environment
+# before anything runs it: a collapsible group per environment in GitHub
+# Actions, a plain block elsewhere.
+show_configs() {
+  local e file
+  for e in "${ENVS[@]}"; do
+    file="agents/$e/config.yaml"
+    [ -f "$file" ] || continue
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+      echo "::group::Agent configuration $file"
+      cat "$file"
+      echo "::endgroup::"
+    else
+      log "Agent configuration $file"
+      sed 's/^/    /' "$file" >&2
+    fi
+  done
 }
 
 # module_source modules/aws/vpc -> aws/vpc, modules/k8s/argocd -> argocd
