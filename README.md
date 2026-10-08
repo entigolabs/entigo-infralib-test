@@ -27,7 +27,7 @@ modules/<type>/<name>/test.sh        copy of templates/module-test.sh: tests thi
 modules/<type>/<name>/test/
     <env>.yaml                       agent inputs of the module in that environment (optional)
     *_test.go                        the module's tests
-    module.yaml                      optional: pin_step
+    module.yaml                      optional settings of the module's tests, see below
 ```
 
 ### environments/
@@ -72,6 +72,18 @@ steps:
 A module of this repository is part of an environment when a step lists it. Its `test/<env>.yaml` holds only what that scenario changes: never restate a default, or a changed default goes unnoticed by the tests and reaches a release. An empty input file (comments only) is the normal case for a module tested with its defaults. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
 
 What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke` or `oracle/oke` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`); OKE contexts carry no cluster name, so an Oracle test imports the `oracle` package, which resolves it from the cluster id output. A route check reads the HTTPRoute and its Gateway, so no gateway or DNS configuration is needed.
+
+### test/module.yaml
+
+Optional, one file per module, read with strict keys. It holds what the framework needs to know about a module beyond its inputs:
+
+```yaml
+pin_step: true
+```
+
+`pin_step` is for modules that cannot be installed twice on one environment, or whose second installation would hide whether the branch's one works: external-dns, argocd, a gateway controller, an aws-alb, a karpenter. A pull request normally tests a module in a per-branch step under a branch-prefixed name next to the regular installation. A pinned module is applied inside its regular step under its regular name instead, so the pull request replaces the shared installation for its test, and the installation keeps that version until the next main, stable or release run puts main back. Terraform modules can be pinned too; they stay in whatever step the environment file puts them in.
+
+Because a pinned pull request touches the shared installation, `module-pull-request.yaml` makes such runs wait for every other run of the workflow, on any branch, before they start. Pull requests without a pinned module only wait for runs of their own branch, since per-branch steps cannot collide. The main workflow is a separate workflow and is not part of that queue.
 
 ### Writing a module test
 
@@ -166,7 +178,7 @@ Tags: pull request `dev`; main `<sha>` and `main`. Versions are made by the `Rel
 
 Three reusable workflows, called with `secrets: inherit`. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`. The clouds whose secrets are set are the ones whose environments run. Each builds the kubeconfig for EKS and GKE from the environments' cluster modules (`.github/actions/kubeconfig`) and uploads `logs/`.
 
-- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
+- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name); a module with `pin_step` is applied to its regular step instead and such a run waits for every other run of the workflow first (see `test/module.yaml`). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
 - `module-main.yaml`: after a merge to main, one job per environment applies main to the regular installation (every step the environment file defines, modules from the checkout) and runs the tests of the modules the push changed, or of every module when the push changed none. Nothing is tagged; it keeps the shared installation current between releases.
 - `module-stable.yaml`: one job per environment that provisions the latest release of the repository and runs the tests of that release; a final `Stable` job gates on all of them. The modules come from `source` when given (for example an `oci://` registry), else from `release_repo`, else from the repository itself.
 - `module-release.yaml`: one job per environment that applies `main` from the repository's git URL and tests it, then a `Release` job that tags main and creates the GitHub release. The version is `release_version.txt` plus `.0` when its major.minor moved, else the latest patch plus one. Two optional destinations:

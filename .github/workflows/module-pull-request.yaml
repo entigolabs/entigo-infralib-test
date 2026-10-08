@@ -4,6 +4,13 @@
 # something like a cluster on every push would be slow and wasteful, and the
 # test environments are nuked daily anyway.
 #
+# A module with pin_step in its test/module.yaml cannot have a branch
+# installation (a second external-dns would hide whether the branch's one
+# works), so it is applied inside its regular step and name. Pull requests
+# that touch such a module wait for every other run of this workflow, on any
+# branch, before they start; the others only wait for runs of their own branch,
+# since their per-branch steps cannot collide.
+#
 # In the module repository:
 #
 #   on:
@@ -43,6 +50,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       any: ${{ steps.set.outputs.any }}
+      pinned: ${{ steps.set.outputs.pinned }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -78,6 +86,15 @@ jobs:
         else
           echo "any=true" >> "$GITHUB_OUTPUT"; echo "matrix={\"module\":${modules}}" >> "$GITHUB_OUTPUT"
         fi
+        # A pinned module is applied to the shared installation, so the run
+        # must not overlap with any other run of this workflow.
+        pinned=false
+        for m in $(echo "${modules:-[]}" | jq -r '.[]'); do
+          if [ -f "$m/test/module.yaml" ] && grep -qE '^pin_step:[[:space:]]*true[[:space:]]*$' "$m/test/module.yaml"; then
+            echo "$m is pinned to its regular step"; pinned=true
+          fi
+        done
+        echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
 
   test:
     name: ${{ matrix.module }}
@@ -100,8 +117,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Wait for other runs on the shared environments
+      # Per-branch steps cannot collide, so a run only queues behind its own
+      # branch, unless it applies a pinned module to the shared installation:
+      # then it queues behind every run of this workflow.
       uses: softprops/turnstyle@v3
       with:
+        same-branch-only: ${{ needs.detect.outputs.pinned != 'true' }}
         abort-after-seconds: 3600
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
