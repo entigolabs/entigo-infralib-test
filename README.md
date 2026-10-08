@@ -71,11 +71,11 @@ steps:
 
 A module of this repository is part of an environment when a step lists it. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
 
-What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke` or `oracle/oke` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`); OKE contexts carry no cluster name, so an Oracle test imports the `oracle` package, which resolves it from the cluster id output. The gateway to publish through is the `aws-alb`, `google-gateway` or `oracle-gateway` module: its agent name is the namespace, its `global.externalGateway` input (or the chart default) the gateway name, and the `pub_domain` output of the `route53` or `dns` module the domain.
+What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke` or `oracle/oke` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`); OKE contexts carry no cluster name, so an Oracle test imports the `oracle` package, which resolves it from the cluster id output. A route check reads the HTTPRoute and its Gateway, so no gateway or DNS configuration is needed.
 
 ### Writing a module test
 
-A module test runs once per environment the module has an input for, as parallel subtests named after the environment. Two shapes:
+A module test runs once per environment the module is part of, as parallel subtests named after the environment. A module can have as many test functions as it needs; each one decides whether it is the same everywhere (`env.Run`) or differs per environment (`env.RunEach`).
 
 ```go
 package test
@@ -86,41 +86,45 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	_ "github.com/entigolabs/entigo-infralib-test/aws" // output reader of each cloud the module runs on; tf.Get and k8s.Gateway need it
 	"github.com/entigolabs/entigo-infralib-test/env"
 	"github.com/entigolabs/entigo-infralib-test/k8s"
-	"github.com/entigolabs/entigo-infralib-test/tf"
 )
 
-// Same expectations everywhere: env.Run, branch on e where needed.
-func TestHelloWorld(t *testing.T) {
+// Same expectation everywhere.
+func TestDeployment(t *testing.T) {
 	env.Run(t, func(t *testing.T, e *env.Environment) {
-		outputs := tf.Get(t, e)               // OpenTofu outputs of the step the module was applied in
-		require.NotEmpty(t, outputs.String(t, "hello-world__hello_world"))
+		c := k8s.Connect(t, e)                                          // the environment's cluster, in the module's namespace
+		k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 60, 6*time.Second)
 	})
 }
 
-// Distinct expectations per environment: env.RunEach with one function each.
-// The map must cover exactly the environments the module has inputs for;
-// an input without a test or a test without an input fails the run.
-func TestHelloWorldExposure(t *testing.T) {
+// Distinct expectations per environment. The map must cover exactly the
+// environments the module is part of; a gap either way fails the run.
+func TestRoute(t *testing.T) {
 	env.RunEach(t, map[string]env.TestFunc{
-		"aws_biz": testPublic,
-		"aws_pri": testInternal,
+		"aws_biz": testRoutePublic,
+		"aws_pri": testRouteAbsent,
 	})
 }
 
-func testPublic(t *testing.T, e *env.Environment) {
-	c := k8s.Connect(t, e)                    // the environment's cluster, in the module's namespace
-	k8s.WaitUntilDeploymentAvailable(t, c, c.Namespace, 20, 6*time.Second)
-	gateway := k8s.Gateway(t, e, "external")   // derived from the aws-alb and route53 modules; needs the aws import above
-	require.NoError(t, k8s.WaitUntilHostnameAvailable(t, c, gateway, "https://"+gateway.Hostname(c.Namespace), "200", gateway.Retries, 6*time.Second))
+func testRoutePublic(t *testing.T, e *env.Environment) {
+	c := k8s.Connect(t, e)
+	// Hostname, scheme, port and the load balancer address all come from the
+	// HTTPRoute and its Gateway; the check runs an in-cluster curl Job pinned
+	// to the address with the Host header set, so internal load balancers
+	// work and DNS propagation does not matter. 200 at / is the default.
+	route := k8s.WaitUntilRouteReachable(t, c, c.Namespace, 100, 6*time.Second)
+	require.False(t, route.Internal(), "%s must be public", route.URL())
 }
 
-func testInternal(t *testing.T, e *env.Environment) { /* ... */ }
+func testRouteAbsent(t *testing.T, e *env.Environment) { /* assert no HTTPRoute exists */ }
 ```
 
-Tests never hold cloud account ids, cluster names or hostnames: those are derived from the environment's modules. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks the context.
+A terraform module test reads its step's OpenTofu outputs with `tf.Get(t, e)`, which needs the cloud package imported for its output reader (`import _ "github.com/entigolabs/entigo-infralib-test/aws"`); k8s tests need no cloud package.
+
+Tests never hold cloud account ids, cluster names or hostnames: the cluster is derived from the environment's cluster module, routes and gateways are read from the cluster. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks the context.
+
+**Running against one environment.** `./test.sh test --env aws_biz` (or `INFRALIB_ENVIRONMENTS=aws_biz` for a bare `go test`) selects the environments; `env.Run` and `env.RunEach` run only those and skip the test when none is selected. Subtests are named after the environment, so `go test -run 'TestRoute/aws_biz'` works as well.
 
 Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 4); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
 

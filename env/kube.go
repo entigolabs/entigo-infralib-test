@@ -1,7 +1,6 @@
 package env
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 
@@ -59,20 +58,4 @@ func RegisteredKubeContextClouds() []string {
 	}
 	sort.Strings(clouds)
 	return clouds
-}
-
-// Gateway names the shared ingress gateway tests publish hostnames through.
-// The k8s package derives it from the environment's gateway and DNS modules.
-type Gateway struct {
-	Name      string
-	Namespace string
-	// Domain is the DNS zone hostnames are created in; Hostname() joins it with a namespace.
-	Domain string
-	// Retries is how many 6 second polls hostname checks allow.
-	Retries int
-}
-
-// Hostname returns the FQDN a module's namespace gets under this gateway.
-func (g Gateway) Hostname(namespace string) string {
-	return fmt.Sprintf("%s.%s", namespace, g.Domain)
 }
