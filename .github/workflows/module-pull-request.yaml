@@ -48,7 +48,7 @@ jobs:
     name: Detect changed modules
     runs-on: ${{ inputs.runs-on }}
     outputs:
-      matrix: ${{ steps.set.outputs.matrix }}
+      modules: ${{ steps.set.outputs.modules }}
       any: ${{ steps.set.outputs.any }}
       pinned: ${{ steps.set.outputs.pinned }}
     steps:
@@ -82,9 +82,12 @@ jobs:
         fi
         echo "Modules: ${modules}"
         if [ -z "${modules}" ] || [ "${modules}" = "[]" ]; then
-          echo "any=false" >> "$GITHUB_OUTPUT"; echo 'matrix={"module":[]}' >> "$GITHUB_OUTPUT"
+          echo "any=false" >> "$GITHUB_OUTPUT"; echo "modules=" >> "$GITHUB_OUTPUT"
         else
-          echo "any=true" >> "$GITHUB_OUTPUT"; echo "matrix={\"module\":${modules}}" >> "$GITHUB_OUTPUT"
+          # No braces or brackets in the output: GitHub drops a job output that
+          # contains any line of a multi-line secret, and a JSON credentials
+          # secret has lines that are just { or }. The job rebuilds the JSON.
+          echo "any=true" >> "$GITHUB_OUTPUT"; echo "modules=$(echo "${modules}" | jq -r 'map(@json) | join(",")')" >> "$GITHUB_OUTPUT"
         fi
         # A pinned module is applied to the shared installation, so the run
         # must not overlap with any other run of this workflow.
@@ -102,7 +105,8 @@ jobs:
     if: needs.detect.outputs.any == 'true'
     runs-on: ${{ inputs.runs-on }}
     strategy:
-      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      matrix:
+        module: ${{ fromJson(format('[{0}]', needs.detect.outputs.modules)) }}
       max-parallel: 1
       fail-fast: false
     env:

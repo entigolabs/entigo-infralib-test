@@ -48,7 +48,7 @@ jobs:
     name: Clouds
     runs-on: ${{ inputs.runs-on }}
     outputs:
-      matrix: ${{ steps.clouds.outputs.matrix }}
+      clouds: ${{ steps.clouds.outputs.clouds }}
       prefixes: ${{ steps.clouds.outputs.prefixes }}
     env:
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
@@ -73,10 +73,13 @@ jobs:
             google) [ "${HAS_GOOGLE}" = true ] && echo "$cloud" ;;
             oracle) [ "${HAS_ORACLE}" = true ] && echo "$cloud" ;;
           esac
-        done | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
         echo "Clouds: ${selected}"
-        [ "${selected}" != "[]" ] || { echo "::error::no selected cloud has both credentials and a nuke/<cloud>.yaml" >&2; exit 1; }
-        echo "matrix={\"cloud\":${selected}}" >> "$GITHUB_OUTPUT"
+        [ -n "${selected}" ] || { echo "::error::no selected cloud has both credentials and a nuke/<cloud>.yaml" >&2; exit 1; }
+        # No braces or brackets in the output: GitHub drops a job output that
+        # contains any line of a multi-line secret, and a JSON credentials
+        # secret has lines that are just { or }. The job rebuilds the JSON.
+        echo "clouds=${selected}" >> "$GITHUB_OUTPUT"
         if [ -z "${PREFIXES}" ]; then
           PREFIXES=$(ls environments/oracle_*.yaml 2>/dev/null | sed -E 's#.*/oracle_(.*)\.yaml#\1#' | paste -sd, -)
         fi
@@ -88,7 +91,8 @@ jobs:
     needs: plan
     runs-on: ${{ inputs.runs-on }}
     strategy:
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      matrix:
+        cloud: ${{ fromJson(format('[{0}]', needs.plan.outputs.clouds)) }}
       fail-fast: false
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
