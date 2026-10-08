@@ -3,7 +3,7 @@
 # <sha> images that the Images workflow produced for main are re-tagged as
 # vX.Y.Z and latest (same digests, no rebuild), then the git tag and the
 # GitHub release are created. The version is release_version.txt plus .0 when
-# its major.minor moved, else the latest release's patch plus one.
+# its major.minor moved, else the highest existing vX.Y.Z tag's patch plus one.
 name: Release
 
 on:
@@ -40,13 +40,14 @@ jobs:
             || { echo "::error::entigolabs/entigo-infralib-test-$name:$GITHUB_SHA is not in the registry" >&2; exit 1; }
         done
 
+    # The previous version is the highest vX.Y.Z git tag, not the latest GitHub
+    # release: older versions were tagged without a release, and a repository
+    # with only pre-releases has no "latest release" either.
     - name: Decide the version
       id: version
-      env:
-        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+        latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
         wanted=$(tr -d '[:space:]' < release_version.txt)
         if [ -z "$latest" ]; then
           new="v${wanted}.0"
@@ -56,6 +57,13 @@ jobs:
           patch=$(echo "$latest" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)$/\1/')
           if [ "$major_minor" = "$wanted" ]; then new="v${major_minor}.$((patch + 1))"; else new="v${wanted}.0"; fi
         fi
+        # Refuse to overwrite anything: a published version is immutable.
+        ! git ls-remote --exit-code --tags origin "refs/tags/$new" >/dev/null \
+          || { echo "::error::tag $new already exists" >&2; exit 1; }
+        for name in cli aws google oracle; do
+          ! docker manifest inspect "entigolabs/entigo-infralib-test-$name:$new" >/dev/null 2>&1 \
+            || { echo "::error::entigolabs/entigo-infralib-test-$name:$new is already in the registry" >&2; exit 1; }
+        done
         echo "latest=${latest:-none} new=${new}"
         { echo "new=$new"; echo "latest=$latest"; } >> "$GITHUB_OUTPUT"
 
