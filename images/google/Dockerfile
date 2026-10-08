@@ -29,10 +29,12 @@ USER root
 # newer go directive from downloading another toolchain; bump GO_VERSION instead.
 # GOFLAGS=-mod=mod lets a test add a dependency the image did not cache: it is
 # downloaded on the spot and the cache catches up on the next image build.
+# -dwarf=false: nothing debugs a test binary, and the compiled packages in the
+# build cache are a quarter smaller without the debug information.
 # LOCAL_MODE: the agent's entrypoint scripts pass the plan to the apply stage
 # through the filesystem (ei-agent --pipeline-type=local), not a CI artifact.
 ENV LOCAL_MODE=true
-ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/go/cache GOTOOLCHAIN=local GOFLAGS=-mod=mod \
+ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/go/cache GOTOOLCHAIN=local GOFLAGS="-mod=mod -gcflags=all=-dwarf=false" \
     PATH=/usr/local/go/bin:/go/bin:$PATH \
     INFRALIB_TEST_CLOUD=google
 RUN wget --no-verbose -O go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
@@ -58,7 +60,12 @@ RUN cd /opt/infralib-test/src \
     && go build ./env/... ./logger/... ./random/... ./retry/... ./tf/... ./k8s/... ./google/... \
     && go test -c -o /dev/null ./env/... \
     && go list -test -deps ./k8s/... ./google/... >/dev/null \
-    && find /go/pkg/mod -type f -name examples-1.json -delete \
+    && chmod -R a+rwX /go
+# Then shrink what was warmed: tests and fixtures, module zips, and the
+# packages of large modules nobody imports (restored on demand by the run
+# command, see images/prune-go-caches.sh).
+COPY images/prune-go-caches.sh /opt/infralib-test/prune-go-caches.sh
+RUN cd /opt/infralib-test/src && /opt/infralib-test/prune-go-caches.sh ./env/... ./logger/... ./random/... ./retry/... ./tf/... ./k8s/... ./google/... \
     && chmod -R a+rwX /go
 COPY scripts/ /opt/infralib-test/scripts/
 COPY templates/ /opt/infralib-test/templates/
