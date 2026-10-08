@@ -221,11 +221,63 @@ func TestGenerateInPlace(t *testing.T) {
 		InPlace:      true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"net"}, result.Steps["aws_exa"])
+	require.Equal(t, []string{"net"}, result.Steps["aws_exa"], "a terraform module is applied inside its regular step")
 	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
-	require.Equal(t, "net,infra,apps", strings.Join(stepNames(agent), ","), "in-place adds no step")
+	require.Equal(t, "net,infra,apps", strings.Join(stepNames(agent), ","), "in-place adds no step for terraform")
 	require.Equal(t, "main", agent.Sources[0].Version)
 	require.True(t, agent.Sources[0].ForceVersion)
+}
+
+func TestGenerateInPlaceK8s(t *testing.T) {
+	config := fixture(t)
+	out := filepath.Join(t.TempDir(), "agents")
+	hello, err := config.ModuleBySource("hello-world")
+	require.NoError(t, err)
+	result, err := generate(generateOptions{
+		Config:       config,
+		OutDir:       out,
+		Environments: config.All(),
+		Self:         env.AgentSource{URL: "/conf"},
+		Modules:      []env.Module{hello},
+		StepPrefix:   "main",
+		InPlace:      true,
+	})
+	require.NoError(t, err)
+	// A k8s module in place still gets a step of its own, so the regular
+	// apps step (and the other modules in it) is not applied, but it keeps
+	// its regular application name and so replaces the regular deployment.
+	require.Equal(t, []string{"main-hello-world"}, result.Steps["aws_exa"])
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, "net,infra,apps,main-hello-world", strings.Join(stepNames(agent), ","))
+	last := agent.Steps[len(agent.Steps)-1]
+	require.Equal(t, "hello-world-exa=hello-world aws-alb-exa=aws-alb", strings.Join(moduleNames(last), " "))
+	p, ok := agent.Find("hello-world")
+	require.True(t, ok)
+	require.Equal(t, "main-hello-world", p.Step.Name)
+	require.Equal(t, "hello-world-exa", p.Module.Name)
+}
+
+func TestGeneratePinnedModule(t *testing.T) {
+	config := fixture(t)
+	hello, err := config.ModuleBySource("hello-world")
+	require.NoError(t, err)
+	hello.Meta.PinStep = true
+	out := filepath.Join(t.TempDir(), "agents")
+	result, err := generate(generateOptions{
+		Config:       config,
+		OutDir:       out,
+		Environments: config.All(),
+		Self:         env.AgentSource{URL: "/conf"},
+		Modules:      []env.Module{hello},
+		StepPrefix:   "mart-foo",
+	})
+	require.NoError(t, err)
+	// pin_step makes a pull request behave like an in-place run for the module.
+	require.Equal(t, []string{"mart-foo-hello-world"}, result.Steps["aws_exa"])
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	last := agent.Steps[len(agent.Steps)-1]
+	require.Equal(t, "mart-foo-hello-world", last.Name)
+	require.Equal(t, "hello-world-exa", last.Modules[0].Name, "the regular application, not a branch copy")
 }
 
 func TestGenerateExternalNeedsSource(t *testing.T) {

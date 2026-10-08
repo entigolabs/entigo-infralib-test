@@ -34,7 +34,9 @@ options:
       --source URL      agent source of this repository instead of the mounted
                         checkout (e.g. https://github.com/org/repo)
       --version VER     version of that source (sets force_version)
-      --in-place        apply the given modules inside their regular steps
+      --in-place        apply the given modules under their regular names (k8s
+                        modules in a step of their own, terraform modules inside
+                        their regular step) instead of as branch copies
                         instead of per-module steps of this branch
       --step-prefix P   name prefix of per-module steps (default: derived from
                         the user and branch, "main" on the main branch in CI)
@@ -287,7 +289,8 @@ generate() {
   fi
   if [ ${#MODULES[@]} -gt 0 ]; then
     for m in "${MODULES[@]}"; do args+=(-module "$(module_source "$m")"); done
-    if [ "$IN_PLACE" = true ]; then args+=(-in-place); else args+=(-step-prefix "$(step_prefix)"); fi
+    args+=(-step-prefix "$(step_prefix)")
+    [ "$IN_PLACE" = true ] && args+=(-in-place)
   fi
   log "Generating agent configurations for ${ENVS[*]}"
   local line

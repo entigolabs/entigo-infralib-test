@@ -25,8 +25,9 @@ type generateOptions struct {
 	// its own named <StepPrefix>-<module> unless it pins its regular step.
 	Modules    []env.Module
 	StepPrefix string
-	// InPlace applies the restricted Modules inside their regular steps, the
-	// way a post-merge run updates a stable environment.
+	// InPlace applies the restricted Modules under their regular names: a k8s
+	// module in a step of its own named <StepPrefix>-<module>, a terraform
+	// module inside its regular step. The post-merge use.
 	InPlace bool
 }
 
@@ -49,7 +50,7 @@ func generateCommand(args []string) error {
 	forceVersion := fs.Bool("force-version", false, "set force_version on this repository's source")
 	fs.Var(&modules, "module", "only test this module source, in a step of its own (repeatable)")
 	stepPrefix := fs.String("step-prefix", "", "name prefix of per-module steps (required with -module unless -in-place)")
-	inPlace := fs.Bool("in-place", false, "with -module: apply the modules inside their regular steps instead of per-module steps")
+	inPlace := fs.Bool("in-place", false, "with -module: apply the modules under their regular names (k8s modules in a step of their own, terraform modules in their regular step) instead of as branch copies")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: infralib-test generate [flags]\n\nWrites agents/<env>/config.yaml for every selected environment: the environment's own agent configuration with this repository as first source, module names and the inputs of this repository's modules filled in, and per-module steps appended. Prints one line per environment: '<env> all', '<env> <step>,<step>' or '<env> skip'.\n\n")
 		fs.PrintDefaults()
@@ -86,7 +87,7 @@ func generateCommand(args []string) error {
 		}
 		opts.Modules = append(opts.Modules, m)
 	}
-	if len(opts.Modules) > 0 && opts.StepPrefix == "" && !opts.InPlace {
+	if len(opts.Modules) > 0 && opts.StepPrefix == "" {
 		return fmt.Errorf("-step-prefix is required with -module")
 	}
 	result, err := generate(opts)
@@ -194,14 +195,20 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	rawSources, _ := raw["sources"].([]any)
 	raw["sources"] = append([]any{toRaw(self)}, rawSources...)
 
-	// Per-module steps of a restricted run.
+	// Per-module steps of a restricted run. The regular steps stay in the
+	// config untouched so that every template reference resolves and the
+	// state keeps every module, but only the per-module steps run.
 	var runSteps []string
 	for _, m := range opts.Modules {
 		home, ok := config.Find(e, m.Source)
 		if !ok {
 			continue
 		}
-		if m.Meta.PinStep || opts.InPlace {
+		inPlace := m.Meta.PinStep || opts.InPlace
+		if inPlace && home.Step.Type != env.StepTypeArgoCD {
+			// A terraform module is applied inside its regular step: a step
+			// of its own would be a second state creating the resources twice.
+			// The other modules of the step are applied with it.
 			runSteps = appendUnique(runSteps, home.Step.Name)
 			continue
 		}
@@ -215,8 +222,15 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			return nil, err
 		}
 		// A k8s module gets a branch-prefixed application name so it lives
-		// next to the regular step's deployment instead of replacing it.
+		// next to the regular step's deployment instead of replacing it. In
+		// place it keeps its regular name and replaces the regular deployment,
+		// still in a step of its own: the regular step would apply every other
+		// module of the repository from this checkout too, undoing what a
+		// pull request on one of them has deployed.
 		own.Name = home.Module.BranchName(e, opts.StepPrefix)
+		if inPlace {
+			own.Name = home.Module.AgentName(e)
+		}
 		modules := []any{toRaw(own)}
 		// The gateway module a chart chains inputs from must be present in
 		// the step for templating to resolve, as a default that is not applied.

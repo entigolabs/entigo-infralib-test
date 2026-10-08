@@ -38,9 +38,11 @@ type Module struct {
 
 // ModuleMeta is the content of test/module.yaml.
 type ModuleMeta struct {
-	// PinStep tests the module inside its regular step even when the rest of a
-	// pull request run uses a per-branch step (modules the step itself depends
-	// on, such as config-rules).
+	// PinStep applies the module under its regular name in a pull request
+	// run too, for modules that cannot be installed twice on one environment
+	// or whose second installation would hide whether the branch's one works
+	// (external-dns, argocd, a gateway controller). A k8s module still gets a
+	// step of its own; a terraform module runs inside its regular step.
 	PinStep bool `json:"pin_step,omitempty"`
 }
 
