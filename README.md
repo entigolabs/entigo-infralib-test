@@ -69,7 +69,7 @@ steps:
       - source: hello-world
 ```
 
-A module of this repository is part of an environment when a step lists it. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
+A module of this repository is part of an environment when a step lists it. Its `test/<env>.yaml` holds only what that scenario changes: never restate a default, or a changed default goes unnoticed by the tests and reaches a release. An empty input file (comments only) is the normal case for a module tested with its defaults. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
 
 What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke` or `oracle/oke` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`); OKE contexts carry no cluster name, so an Oracle test imports the `oracle` package, which resolves it from the cluster id output. A route check reads the HTTPRoute and its Gateway, so no gateway or DNS configuration is needed.
 
