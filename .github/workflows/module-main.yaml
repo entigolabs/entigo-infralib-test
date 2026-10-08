@@ -122,16 +122,21 @@ jobs:
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
     - name: Apply main to ${{ matrix.environment }}
-      # The changed modules come from the checkout and are applied under their
-      # regular names; nothing else is touched. Without changed modules every
-      # step runs, so that changes outside modules/ are applied too.
+      # The changed modules are applied under their regular names; nothing
+      # else is touched. Without changed modules every step runs, so that
+      # changes outside modules/ are applied too. The modules come from the
+      # repository's main branch, not from the checkout: a mounted path ends
+      # up as a file:// source in the ArgoCD Applications, which only works
+      # while the repo-server pod that received it is alive. Paths are for
+      # pull requests and local runs.
       env:
         MODULES: ${{ needs.plan.outputs.modules }}
+        SOURCE: ${{ github.server_url }}/${{ github.repository }}
       run: |
         if [ -n "${MODULES}" ]; then
-          ./test.sh agent --in-place --env ${{ matrix.environment }} ${MODULES}
+          ./test.sh agent --in-place --env ${{ matrix.environment }} --source "${SOURCE}" --version main ${MODULES}
         else
-          ./test.sh agent --env ${{ matrix.environment }}
+          ./test.sh agent --env ${{ matrix.environment }} --source "${SOURCE}" --version main
         fi
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
       with:
