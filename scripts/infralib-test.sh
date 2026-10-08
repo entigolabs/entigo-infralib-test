@@ -363,7 +363,9 @@ run_agent() {
   if [ "$QUIET" = true ]; then
     docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" >"logs/$e/agent-$sub.log" 2>&1
   else
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | sed "s/^/[$e] /"
+    # sed -u: unbuffered, so the live log in CI moves line by line instead of
+    # in 4 KB blocks (the apply phase is quiet enough to sit in a buffer).
+    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | sed -u "s/^/[$e] /"
     return "${PIPESTATUS[0]}"
   fi
 }
