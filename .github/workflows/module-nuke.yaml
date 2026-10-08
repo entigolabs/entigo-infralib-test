@@ -117,15 +117,12 @@ jobs:
         MSG_MINIMAL: actions url
     - uses: actions/checkout@v4
     - name: Framework scripts
-      # The scripts of the framework version this workflow belongs to.
-      env:
-        WORKFLOW_REF: ${{ github.workflow_ref }}
-      run: echo "ref=${WORKFLOW_REF##*@}" >> "$GITHUB_OUTPUT"
-      id: framework
-    - uses: actions/checkout@v4
+      # The scripts of the framework commit this workflow belongs to
+      # (job_workflow_sha; workflow_ref would be the caller's).
+      uses: actions/checkout@v4
       with:
         repository: entigolabs/entigo-infralib-test
-        ref: ${{ steps.framework.outputs.ref }}
+        ref: ${{ github.job_workflow_sha }}
         path: .infralib-test/framework
     - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
       if: matrix.cloud == 'oracle'
