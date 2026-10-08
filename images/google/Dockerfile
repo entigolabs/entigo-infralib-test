@@ -42,7 +42,16 @@ COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
 # Only the Go sources feed the cache warming, so a change to scripts or docs
 # does not recompile everything.
 COPY go.mod go.sum /opt/infralib-test/src/
-COPY aws google oracle k8s env tf logger random retry cmd /opt/infralib-test/src/
+COPY aws/ /opt/infralib-test/src/aws/
+COPY google/ /opt/infralib-test/src/google/
+COPY oracle/ /opt/infralib-test/src/oracle/
+COPY k8s/ /opt/infralib-test/src/k8s/
+COPY env/ /opt/infralib-test/src/env/
+COPY tf/ /opt/infralib-test/src/tf/
+COPY logger/ /opt/infralib-test/src/logger/
+COPY random/ /opt/infralib-test/src/random/
+COPY retry/ /opt/infralib-test/src/retry/
+COPY cmd/ /opt/infralib-test/src/cmd/
 # Warm the module and build caches with what a google module test resolves:
 # the framework packages of this cloud, the Kubernetes client and testify.
 RUN cd /opt/infralib-test/src \
