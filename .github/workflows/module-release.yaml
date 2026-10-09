@@ -214,8 +214,9 @@ jobs:
       run: |
         set -euo pipefail
         since=${LATEST:-$(git rev-list --max-parents=0 HEAD)}
-        modules=$(git diff --name-only "$since" HEAD -- modules | cut -d/ -f1-3 | sort -u | sed 's/^/- /')
-        other=$(git diff --name-only "$since" HEAD | grep -v '^modules/' | cut -d/ -f1 | sort -u | sed 's/^/- /')
+        # grep exits 1 when nothing matches, which is a valid outcome here.
+        modules=$(git diff --name-only "$since" HEAD -- modules | cut -d/ -f1-3 | sort -u | sed 's/^/- /' || true)
+        other=$(git diff --name-only "$since" HEAD | { grep -v '^modules/' || true; } | cut -d/ -f1 | sort -u | sed 's/^/- /')
         {
           echo "notes<<EOF"
           echo "## Changed modules"
