@@ -24,6 +24,9 @@
 # otherwise the latest release's patch plus one. OCI publishing logs in to
 # ghcr.io with the run's token and to public.ecr.aws with the AWS secrets;
 # the GitHub release's manifest.json asset is its completion marker.
+# With a SLACK_WEBHOOK_URL secret (plus SLACK_USERNAME, SLACK_ICON_EMOJI) a
+# failed environment, a failed release and a published release are posted
+# to Slack; without it nothing is posted.
 # Publishing to release_repo needs the SSH_PRIVATE_KEY secret, a deploy key
 # with write access there, and that repository's tag is its marker. A run
 # that died after creating the GitHub release resumes what is missing.
@@ -95,6 +98,7 @@ jobs:
         environment: ${{ fromJson(format('[{0}]', needs.plan.outputs.environments)) }}
       fail-fast: false
     env:
+      HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -132,6 +136,16 @@ jobs:
         name: logs-${{ matrix.environment }}
         path: logs/
         if-no-files-found: ignore
+    - name: Slack message
+      if: failure() && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: failure
+        SLACK_MESSAGE: "Updating from latest release to main failed for ${{ matrix.environment }} in ${{ github.repository }}"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
 
   release:
     name: Release
@@ -144,6 +158,7 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -189,22 +204,42 @@ jobs:
         fi
         echo "latest=${latest_tag} main=${main_sha} new=${new} needed=${needed} exists=${exists}"
         { echo "new=${new}"; echo "oci=${new#v}"; echo "needed=${needed}"; echo "exists=${exists}"; echo "latest=${latest_tag}"; } >> "$GITHUB_OUTPUT"
+    - name: Release notes
+      # The modules that changed since the previous release, plus the other
+      # top-level paths that did (environments, workflows), as a heading
+      # before the pull request list that --generate-notes adds.
+      id: notes
+      env:
+        LATEST: ${{ steps.version.outputs.latest }}
+      run: |
+        set -euo pipefail
+        since=${LATEST:-$(git rev-list --max-parents=0 HEAD)}
+        modules=$(git diff --name-only "$since" HEAD -- modules | cut -d/ -f1-3 | sort -u | sed 's/^/- /')
+        other=$(git diff --name-only "$since" HEAD | grep -v '^modules/' | cut -d/ -f1 | sort -u | sed 's/^/- /')
+        {
+          echo "notes<<EOF"
+          echo "## Changed modules"
+          echo "${modules:-- none}"
+          if [ -n "$other" ]; then echo; echo "## Other changes"; echo "$other"; fi
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
     - name: Tag and create the GitHub release
       if: steps.version.outputs.needed == 'true' && steps.version.outputs.exists != 'true'
+      id: release
       env:
         GH_TOKEN: ${{ github.token }}
         NEW: ${{ steps.version.outputs.new }}
         LATEST: ${{ steps.version.outputs.latest }}
+        NOTES: ${{ steps.notes.outputs.notes }}
       run: |
         set -euo pipefail
         git config user.name "GitHub Actions" && git config user.email "actions@github.com"
-        git tag -a "$NEW" -m "Release $NEW"
+        git tag -a "$NEW" -m "Release $NEW" -m "$NOTES"
         git push origin "$NEW"
-        changed=$(git diff --name-only "${LATEST:-$(git rev-list --max-parents=0 HEAD)}" HEAD -- modules | cut -d/ -f1-3 | sort -u | sed 's/^/- /')
         notes_args=(--generate-notes)
         [ -n "$LATEST" ] && notes_args+=(--notes-start-tag "$LATEST")
-        gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --notes "## Changed modules
-        ${changed:-- none}" --latest
+        url=$(gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --notes "$NOTES" --latest)
+        echo "url=$url" >> "$GITHUB_OUTPUT"
     - name: Publish OCI packages
       if: steps.version.outputs.needed == 'true' && inputs.oci_registries != ''
       id: oci
@@ -225,6 +260,7 @@ jobs:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         RELEASE_REPO: ${{ inputs.release_repo }}
         NEW: ${{ steps.version.outputs.new }}
+        NOTES: ${{ steps.notes.outputs.notes }}
       run: |
         set -euo pipefail
         [ -n "${SSH_PRIVATE_KEY}" ] || { echo "::error::SSH_PRIVATE_KEY secret (deploy key with write access to ${RELEASE_REPO}) is not set" >&2; exit 1; }
@@ -242,13 +278,33 @@ jobs:
         if git diff --cached --quiet; then
           echo "Nothing to commit, files already match ${NEW}"
         else
-          git commit -m "Release ${NEW}" -m "Published from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git commit -m "Release ${NEW}" -m "${NOTES}" -m "Published from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           git push
         fi
         if git rev-parse -q --verify "refs/tags/${NEW}" >/dev/null; then
           echo "Tag ${NEW} already exists in ${slug}"
         else
-          git tag -a "${NEW}" -m "Release ${NEW}"
+          git tag -a "${NEW}" -m "Release ${NEW}" -m "${NOTES}"
           git push origin "${NEW}"
         fi
         echo "Published ${NEW} to ${RELEASE_REPO}"
+    - name: Slack message
+      if: success() && steps.version.outputs.needed == 'true' && steps.version.outputs.exists != 'true' && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: good
+        SLACK_MESSAGE: "Released ${{ steps.version.outputs.new }} of ${{ github.repository }} ${{ steps.release.outputs.url }}\n${{ steps.notes.outputs.notes }}"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
+    - name: Slack message
+      if: failure() && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: failure
+        SLACK_MESSAGE: "Releasing a new version of ${{ github.repository }} failed"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
