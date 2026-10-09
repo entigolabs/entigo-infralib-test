@@ -13,7 +13,7 @@
 #     nuke:
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-nuke.yaml@main
 #       with:
-#         clouds: ${{ inputs.cloud == 'all' && '' || inputs.cloud }}
+#         clouds: ${{ inputs.cloud || '' }}
 #         dry_run: ${{ inputs.dry_run || false }}
 #       secrets: inherit
 #
@@ -28,7 +28,7 @@ on:
   workflow_call:
     inputs:
       clouds:
-        description: comma separated clouds to nuke; empty means every cloud with credentials
+        description: comma separated clouds to nuke; empty or "all" means every cloud with credentials
         type: string
         default: ''
       prefixes:
@@ -63,6 +63,9 @@ jobs:
         PREFIXES: ${{ inputs.prefixes }}
       run: |
         set -euo pipefail
+        # "all" is what a dispatch choice input says for every cloud; a GitHub
+        # expression cannot turn it into an empty string (a && '' || b yields b).
+        [ "${CLOUDS}" != all ] || CLOUDS=""
         selected=$(for cloud in aws google oracle; do
           if [ -n "${CLOUDS}" ]; then
             case ",${CLOUDS}," in *",${cloud},"*) ;; *) continue ;; esac
