@@ -55,6 +55,12 @@ func KubeContext(t logger.T, e *env.Environment) string {
 func matchingContexts(kubeconfig *clientcmdapi.Config, cloud, cluster string) []string {
 	var matches []string
 	for name := range kubeconfig.Contexts {
+		// A context named after the cluster itself, which is what the
+		// kubeconfig action gives an OKE cluster.
+		if name == cluster {
+			matches = append(matches, name)
+			continue
+		}
 		switch cloud {
 		case env.CloudAWS:
 			if strings.HasPrefix(name, "arn:aws:eks:") && strings.HasSuffix(name, ":cluster/"+cluster) {
@@ -77,5 +83,5 @@ func kubeconfigHint(e *env.Environment, cluster string) string {
 	case env.CloudGoogle:
 		return fmt.Sprintf("run: gcloud container clusters get-credentials %s --region %s --project %s", cluster, e.Region, e.Project)
 	}
-	return "run: oci ce cluster create-kubeconfig for the cluster, and import github.com/entigolabs/entigo-infralib-test/oracle in the test"
+	return fmt.Sprintf("run: oci ce cluster create-kubeconfig --cluster-id <id of %s> --region %s --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT, then kubectl config rename-context <context-c...> %s", cluster, e.Region, cluster)
 }
