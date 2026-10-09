@@ -17,17 +17,26 @@ runs:
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
-        # The runner has aws, gcloud and kubectl but no oci; the oracle test
-        # image has it. The config directory is mounted at its own path, since
-        # key_file= in the config is absolute, and the kubeconfig at its own.
+        # gcloud and oci run from the test images: the runner has no oci, and
+        # the gcloud configuration was written by the image's gcloud (see the
+        # credentials action). Config directories are mounted at their own
+        # paths (key_file= in the oci config is absolute) and so is the
+        # kubeconfig; kubectl on the runner then renames the OKE context.
+        version=$(grep -oE 'INFRALIB_TEST_VERSION:-v[0-9.]+' test.sh 2>/dev/null | cut -d- -f2 || true)
+        kube="${KUBECONFIG:-$HOME/.kube/config}"
+        mkdir -p "$(dirname "$kube")"
+        gcloud() {
+          local cfg="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
+          docker run --rm --entrypoint gcloud --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e CLOUDSDK_CONFIG="$cfg" \
+            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$cfg":"$cfg" \
+            "entigolabs/entigo-infralib-test-google:${version:-latest}" "$@"
+        }
         oci() {
-          if command -v oci >/dev/null 2>&1; then command oci "$@"; return; fi
           local config="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
-          mkdir -p "$(dirname "${KUBECONFIG:-$HOME/.kube/config}")"
-          docker run --rm --entrypoint oci --user "$(id -u):$(id -g)" \
+          docker run --rm --entrypoint oci --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" \
             -v "$(dirname "$config")":"$(dirname "$config")":ro -e OCI_CONFIG_FILE="$config" \
-            -v "$(dirname "${KUBECONFIG:-$HOME/.kube/config}")":"$(dirname "${KUBECONFIG:-$HOME/.kube/config}")" \
-            "entigolabs/entigo-infralib-test-oracle:${INFRALIB_TEST_VERSION:-latest}" "$@"
+            -v "$(dirname "$kube")":"$(dirname "$kube")" \
+            "entigolabs/entigo-infralib-test-oracle:${version:-latest}" "$@"
         }
         # awk keeps empty columns apart; bash's read would collapse the tabs
         # around an empty zone or project and shift the cluster column.
@@ -53,7 +62,7 @@ runs:
               [ -n "${OCI_COMPARTMENT_ID:-}" ] && [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] || continue
               id=$(oci ce cluster list --compartment-id "${OCI_COMPARTMENT_ID}" --region "${OCI_REGION}" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
               if [ -z "$id" ] || [ "$id" = null ]; then echo "::warning::no kubeconfig for $name: cluster $cluster is not available"; continue; fi
-              oci ce cluster create-kubeconfig --cluster-id "$id" --region "${OCI_REGION}" --file "${KUBECONFIG:-$HOME/.kube/config}" \
+              oci ce cluster create-kubeconfig --cluster-id "$id" --region "${OCI_REGION}" --file "$kube" \
                 --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT \
                 && kubectl config rename-context "context-c${id: -11}" "$cluster" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
