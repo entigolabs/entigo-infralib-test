@@ -199,6 +199,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	// config untouched so that every template reference resolves and the
 	// state keeps every module, but only the per-module steps run.
 	var runSteps []string
+	gatewayDefaulted := false
 	for _, m := range opts.Modules {
 		home, ok := config.Find(e, m.Source)
 		if !ok {
@@ -233,13 +234,17 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		}
 		modules := []any{toRaw(own)}
 		// The gateway module a chart chains inputs from must be present in
-		// the step for templating to resolve, as a default that is not applied.
+		// the step, since tinput and toptin resolve within a step. It is
+		// applied there too, under its regular name. With several such steps
+		// the config holds the gateway several times, and the agent's
+		// config-wide tmodule lookup wants exactly one marked default.
 		if gw, ok := config.GatewayModule(e); ok && gw.Step.Name == home.Step.Name && gw.Module.Source != m.Source && home.Step.Type == env.StepTypeArgoCD {
 			def, err := agentModule(config, e, gw.Module)
 			if err != nil {
 				return nil, err
 			}
-			def.DefaultModule = true
+			def.DefaultModule = !gatewayDefaulted
+			gatewayDefaulted = true
 			modules = append(modules, toRaw(def))
 		}
 		rawStep["modules"] = modules

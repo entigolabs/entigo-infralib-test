@@ -257,6 +257,57 @@ func TestGenerateInPlaceK8s(t *testing.T) {
 	require.Equal(t, "hello-world-exa", p.Module.Name)
 }
 
+func TestGenerateTwoModulesOneDefaultGateway(t *testing.T) {
+	// A second k8s module next to hello-world in the same apps step.
+	root := fixture(t).Root()
+	write := func(path, content string) {
+		t.Helper()
+		full := filepath.Join(root, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	write("modules/k8s/hello-other/Chart.yaml", "name: hello-other\n")
+	write("modules/k8s/hello-other/test/hello_test.go", "package test\n")
+	write("environments/aws_exa.yaml", awsExa+"      - source: hello-other\n")
+	config, err := env.Load(root)
+	require.NoError(t, err)
+	hello, err := config.ModuleBySource("hello-world")
+	require.NoError(t, err)
+	other, err := config.ModuleBySource("hello-other")
+	require.NoError(t, err)
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err = generate(generateOptions{
+		Config:       config,
+		OutDir:       out,
+		Environments: config.All(),
+		Self:         env.AgentSource{URL: "/conf"},
+		Modules:      []env.Module{hello, other},
+		StepPrefix:   "main",
+		InPlace:      true,
+	})
+	require.NoError(t, err)
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, "net,infra,apps,main-hello-world,main-hello-other", strings.Join(stepNames(agent), ","))
+	defaults := 0
+	for _, step := range agent.Steps {
+		for _, m := range step.Modules {
+			if m.DefaultModule {
+				defaults++
+				require.Equal(t, "aws-alb", m.Source)
+			}
+		}
+	}
+	require.Equal(t, 1, defaults, "the agent accepts one default module per type")
+	// Both per-module steps still carry the gateway for step-scoped templating.
+	for _, name := range []string{"main-hello-world", "main-hello-other"} {
+		for _, step := range agent.Steps {
+			if step.Name == name {
+				require.Equal(t, "aws-alb", step.Modules[1].Source, name)
+			}
+		}
+	}
+}
+
 func TestGeneratePinnedModule(t *testing.T) {
 	config := fixture(t)
 	hello, err := config.ModuleBySource("hello-world")
