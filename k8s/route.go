@@ -75,7 +75,35 @@ func (c *Client) RouteE(name string) (Route, error) {
 	if err != nil {
 		return Route{}, fmt.Errorf("gateway %s/%s of httproute %s: %w", gwNamespace, GetStringValue(parent, "name"), name, err)
 	}
-	return routeFromObjects(route, gateway)
+	r, err := routeFromObjects(route, gateway)
+	if err != nil {
+		return r, err
+	}
+	// A gateway may be fronted by an Ingress of the same name in its namespace
+	// (oracle-gateway: the OCI native ingress controller terminates the
+	// client's TLS and forwards to Istio's ClusterIP gateway). Then the
+	// Ingress's load balancer is the client-facing address.
+	if ingress, err := c.GetObjectE(Ingresses, gwNamespace, gateway.GetName()); err == nil {
+		if address := ingressAddress(ingress); address != "" {
+			r.Address = address
+		}
+	}
+	return r, nil
+}
+
+// ingressAddress is the first load balancer address in an Ingress's status.
+func ingressAddress(ingress *unstructured.Unstructured) string {
+	entries, _, _ := unstructured.NestedSlice(ingress.Object, "status", "loadBalancer", "ingress")
+	for _, e := range entries {
+		entry, _ := e.(map[string]any)
+		if ip := GetStringValue(entry, "ip"); ip != "" {
+			return ip
+		}
+		if host := GetStringValue(entry, "hostname"); host != "" {
+			return host
+		}
+	}
+	return ""
 }
 
 // routeFromObjects derives a Route from an HTTPRoute and its parent Gateway.

@@ -59,3 +59,15 @@ func TestIsInternalAddress(t *testing.T) {
 	require.False(t, IsInternalAddress("k8s-x.eu-north-1.elb.amazonaws.com"))
 	require.False(t, IsInternalAddress("34.88.1.2"))
 }
+
+func TestIngressAddress(t *testing.T) {
+	ingress := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"loadBalancer": map[string]any{"ingress": []any{
+			map[string]any{"ip": "203.0.113.10"},
+		}}},
+	}}
+	require.Equal(t, "203.0.113.10", ingressAddress(ingress))
+	require.False(t, IsInternalAddress(ingressAddress(ingress)), "a public load balancer")
+	empty := &unstructured.Unstructured{Object: map[string]any{}}
+	require.Equal(t, "", ingressAddress(empty), "no status yet")
+}
