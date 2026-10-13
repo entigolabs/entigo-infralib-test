@@ -70,6 +70,7 @@ environment variables:
   GOOGLE_APPLICATION_CREDENTIALS  google service account key file
   OCI_REGION, OCI_COMPARTMENT_ID  required for oracle environments
   OCI_CONFIG_FILE             oracle config (default ~/.oci/config); its directory is mounted
+  OCI_KUBE_ENDPOINT           OKE endpoint the agent connects to (default PUBLIC_ENDPOINT)
   KUBECONFIG                  kubeconfig holding the environments' cluster contexts
                               (aws eks update-kubeconfig / gcloud container clusters
                               get-credentials / oci ce cluster create-kubeconfig)
@@ -202,6 +203,10 @@ base_args() {
       ;;
     oracle)
       for v in OCI_REGION OCI_COMPARTMENT_ID OCI_PROFILE; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
+      # The agent's pipeline scripts write their OKE kubeconfig for the private
+      # endpoint unless told otherwise; a run from outside the VCN (a runner, a
+      # workstation) needs the public one, like the kubeconfig the tests use.
+      ARGS+=(-e "OCI_KUBE_ENDPOINT=${OCI_KUBE_ENDPOINT:-PUBLIC_ENDPOINT}")
       local config="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
       # The config file names its key_file by absolute path, so its directory
       # is mounted at the same path inside the container.
