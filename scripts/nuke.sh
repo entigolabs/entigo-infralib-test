@@ -7,6 +7,7 @@
 #   nuke.sh aws    [--dry-run]
 #   nuke.sh google [--dry-run]
 #   nuke.sh oracle [--dry-run] --prefix biz [--prefix pri ...]
+#   nuke.sh azure  [--dry-run]
 #
 # Configuration: nuke/<cloud>.yaml in the working directory (NUKE_CONFIG
 # overrides), in the format of the tool of that cloud:
@@ -16,7 +17,9 @@
 #   oracle  ghcr.io/entigolabs/oci-nuke    OCI_REGION, OCI_COMPARTMENT_ID, OCI_CONFIG_FILE (default
 #                                          ~/.oci/config), and the environment prefixes: the
 #                                          tenancy-scoped listers find nothing without one
-# AWS_NUKE_IMAGE, GCP_NUKE_IMAGE and OCI_NUKE_IMAGE override the tool images;
+#   azure   taivox/azure-nuke              AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID,
+#                                          AZURE_CLIENT_SECRET (a service principal; the image has no az CLI)
+# AWS_NUKE_IMAGE, GCP_NUKE_IMAGE, OCI_NUKE_IMAGE and AZURE_NUKE_IMAGE override the tool images;
 # NUKE_ATTEMPTS (default 2) runs the nuke again when it fails, since the first
 # pass often leaves dependents behind. --dry-run only lists what would go,
 # and skips the AWS preparation (stopping the config recorders, emptying the
@@ -26,6 +29,7 @@ set -euo pipefail
 AWS_NUKE_IMAGE=${AWS_NUKE_IMAGE:-ghcr.io/ekristen/aws-nuke:v3.48.2}
 GCP_NUKE_IMAGE=${GCP_NUKE_IMAGE:-taivox/gcp-nuke:v0.0.5}
 OCI_NUKE_IMAGE=${OCI_NUKE_IMAGE:-ghcr.io/entigolabs/oci-nuke:0.1.12}
+AZURE_NUKE_IMAGE=${AZURE_NUKE_IMAGE:-taivox/azure-nuke:v0.0.1}
 # The aws CLI for the AWS preparation when the host has none.
 AWS_CLI_IMAGE=${AWS_CLI_IMAGE:-entigolabs/entigo-infralib-test-aws:${INFRALIB_TEST_VERSION:-latest}}
 NUKE_ATTEMPTS=${NUKE_ATTEMPTS:-2}
@@ -34,7 +38,7 @@ log()  { echo "$(date +%H:%M:%S) $*" >&2; }
 warn() { echo "$(date +%H:%M:%S) WARNING: $*" >&2; }
 die()  { echo "nuke.sh: $*" >&2; exit 1; }
 
-[ $# -ge 1 ] || die "usage: nuke.sh aws|google|oracle [--dry-run] [--prefix P]..."
+[ $# -ge 1 ] || die "usage: nuke.sh aws|google|oracle|azure [--dry-run] [--prefix P]..."
 CLOUD=$1; shift
 DRY_RUN=false
 PREFIXES=()
@@ -45,7 +49,7 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument $1" ;;
   esac
 done
-case "$CLOUD" in aws|google|oracle) ;; *) die "unknown cloud $CLOUD" ;; esac
+case "$CLOUD" in aws|google|oracle|azure) ;; *) die "unknown cloud $CLOUD" ;; esac
 CONFIG=$(realpath "${NUKE_CONFIG:-nuke/$CLOUD.yaml}") || die "no nuke configuration ${NUKE_CONFIG:-nuke/$CLOUD.yaml}"
 [ -f "$CONFIG" ] || die "no nuke configuration $CONFIG"
 [ "$DRY_RUN" = true ] && log "Dry run: nothing is deleted"
@@ -135,6 +139,16 @@ nuke_oracle() {
       -e OCI_CONFIG_FILE="$config_file" -e OCI_REGION \
       "$OCI_NUKE_IMAGE" "${args[@]}"
   done
+}
+
+# ----------------------------------------------------------------- azure
+nuke_azure() {
+  : "${AZURE_TENANT_ID:?}" "${AZURE_SUBSCRIPTION_ID:?}" "${AZURE_CLIENT_ID:?}" "${AZURE_CLIENT_SECRET:?}"
+  local args=(run --config /home/azure-nuke/config.yml --tenant-id "$AZURE_TENANT_ID" --subscription-id "$AZURE_SUBSCRIPTION_ID"
+    --no-prompt --prompt-delay 3 --quiet)
+  [ "$DRY_RUN" = false ] && args+=(--no-dry-run)
+  docker run --rm -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET \
+    -v "$CONFIG":/home/azure-nuke/config.yml:ro "$AZURE_NUKE_IMAGE" "${args[@]}"
 }
 
 attempt=1
