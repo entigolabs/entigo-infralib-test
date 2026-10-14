@@ -39,11 +39,16 @@ runs:
             -v "$(dirname "$kube")":"$(dirname "$kube")" \
             "entigolabs/entigo-infralib-test-oracle:${version:-latest}" "$@"
         }
+        # az and kubelogin run from the azure test image with a login of
+        # their own in a temporary config dir: nothing else needs an az
+        # login, the SDKs, the agent and kubelogin read AZURE_* directly.
+        azure_cfg="${RUNNER_TEMP:-/tmp}/infralib-azure"
         azure_tool() {
           local tool=$1; shift
-          local cfg="${AZURE_CONFIG_DIR:-$HOME/.azure}"
-          docker run --rm --entrypoint "$tool" --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e AZURE_CONFIG_DIR="$cfg" \
-            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$cfg":"$cfg" \
+          mkdir -p "$azure_cfg"
+          docker run --rm --entrypoint "$tool" --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e AZURE_CONFIG_DIR="$azure_cfg" \
+            -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET \
+            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$azure_cfg":"$azure_cfg" \
             "entigolabs/entigo-infralib-test-azure:${version:-latest}" "$@"
         }
         az() { azure_tool az "$@"; }
@@ -77,11 +82,13 @@ runs:
                 && kubectl config rename-context "$(kubectl config current-context)" "$cluster" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             azure)
-              [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -d "${AZURE_CONFIG_DIR:-$HOME/.azure}" ] || continue
+              [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_CLIENT_SECRET:-}" ] || continue
               # The cluster lives in the agent's resource group. The converted
               # kubeconfig execs kubelogin as the service principal, which the
               # orchestrator hands the test container in kubelogin's variables.
-              az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${AZURE_LOCATION}}" --name "$cluster" --file "$kube" --overwrite-existing \
+              az login --service-principal -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}" --tenant "${AZURE_TENANT_ID}" --output none \
+                && az account set --subscription "${AZURE_SUBSCRIPTION_ID}" \
+                && az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${AZURE_LOCATION}}" --name "$cluster" --file "$kube" --overwrite-existing \
                 && kubelogin convert-kubeconfig -l spn --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac

@@ -140,10 +140,6 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
-        azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
-        azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-        azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
-        azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
     - name: Environment selection
       id: envs
       env:
