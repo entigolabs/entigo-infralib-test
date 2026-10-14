@@ -2,6 +2,15 @@
 #   pull request  -> entigolabs/entigo-infralib-test-<cloud>:dev
 #   push to main  -> entigolabs/entigo-infralib-test-<cloud>:<sha> and :main
 #
+# Every image is multi-arch (amd64 and arm64). Each architecture builds on a
+# runner of its own kind, never under QEMU: the cloud images warm their Go
+# build cache by compiling inside the image, which took 20 minutes emulated
+# and takes about as long as the amd64 build natively. The build jobs push
+# their single-platform images by digest only, and a manifest job per image
+# joins the two digests into one index under the real tags. A tag therefore
+# never points at a half-built image: it appears only when both
+# architectures succeeded.
+#
 # Versions and latest are not built here: the Release workflow re-tags the
 # <sha> images of a main commit once their builds have succeeded, so a
 # version tag never exists without its images and latest only moves on a
@@ -28,7 +37,76 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.cloud }}
+    name: ${{ matrix.cloud }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [cli, aws, google, oracle, azure]
+        arch: [amd64, arm64]
+        # GitHub-hosted runners of each architecture; both are 4 vCPU for a
+        # public repository.
+        include:
+        - arch: amd64
+          runner: ubuntu-latest
+        - arch: arm64
+          runner: ubuntu-24.04-arm
+    continue-on-error: ${{ matrix.cloud == 'azure' }}
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # push-by-digest: the image is pushed untagged and only its digest comes
+    # out; the manifest job below tags it. The cache is per architecture:
+    # the layers differ, and so does the runner that reuses them.
+    - name: Build and push by digest
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: images/${{ matrix.cloud }}/Dockerfile
+        platforms: linux/${{ matrix.arch }}
+        outputs: type=image,name=entigolabs/entigo-infralib-test-${{ matrix.cloud }},push-by-digest=true,name-canonical=true,push=true
+        build-args: |
+          VERSION=${{ github.sha }}
+          BASE_TAG=${{ matrix.cloud == 'azure' && 'dev' || 'latest' }}
+        provenance: mode=max
+        sbom: true
+        cache-from: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }}
+        cache-to: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }},mode=max
+
+    - name: Export the digest
+      env:
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP}/digests"
+        touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+        echo "${{ matrix.cloud }} ${{ matrix.arch }}: ${DIGEST}"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: digest-${{ matrix.cloud }}-${{ matrix.arch }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  manifest:
+    name: ${{ matrix.cloud }} manifest
+    needs: build
+    # Not `needs` alone: with fail-fast off, one failed architecture of one
+    # cloud would otherwise skip the manifests of every cloud. Each cloud
+    # checks for its own two digests instead and fails on its own.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,8 +116,6 @@ jobs:
     permissions:
       contents: read
     steps:
-    - uses: actions/checkout@v4
-
     - name: Resolve tags
       id: tags
       run: |
@@ -50,10 +126,15 @@ jobs:
           *:refs/heads/main)     tags="${name}:${GITHUB_SHA},${name}:main" ;;
           *) echo "Refusing to publish from ${GITHUB_REF}" >&2; exit 1 ;;
         esac
-        echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+        { echo "name=${name}"; echo "tags=${tags}"; } >> "$GITHUB_OUTPUT"
         echo "Publishing ${tags}"
 
-    - uses: docker/setup-qemu-action@v3
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: digest-${{ matrix.cloud }}-*
+        path: ${{ runner.temp }}/digests
+        merge-multiple: true
+
     - uses: docker/setup-buildx-action@v3
 
     - name: Log in to Docker Hub
@@ -62,22 +143,19 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build and push
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: images/${{ matrix.cloud }}/Dockerfile
-        # amd64 only for now: the cloud images warm the Go build cache by
-        # compiling inside the image, and under QEMU that made an arm64 build
-        # take 20 minutes. arm64 comes back with native arm runners per
-        # platform and a manifest merge, not with emulation.
-        platforms: linux/amd64
-        push: true
-        tags: ${{ steps.tags.outputs.tags }}
-        build-args: |
-          VERSION=${{ github.sha }}
-          BASE_TAG=${{ matrix.cloud == 'azure' && 'dev' || 'latest' }}
-        provenance: mode=max
-        sbom: true
-        cache-from: type=gha,scope=${{ matrix.cloud }}
-        cache-to: type=gha,scope=${{ matrix.cloud }},mode=max
+    - name: Create the multi-arch manifest
+      working-directory: ${{ runner.temp }}/digests
+      env:
+        NAME: ${{ steps.tags.outputs.name }}
+        TAGS: ${{ steps.tags.outputs.tags }}
+      run: |
+        set -euo pipefail
+        # One digest per architecture of the build matrix, or the image is
+        # incomplete and gets no tag.
+        sources=()
+        for digest in *; do sources+=("${NAME}@sha256:${digest}"); done
+        [ "${#sources[@]}" -eq 2 ] || { echo "::error::${NAME}: expected 2 digests (amd64, arm64), found ${#sources[@]}: ${sources[*]}" >&2; exit 1; }
+        tag_args=()
+        for tag in ${TAGS//,/ }; do tag_args+=(-t "$tag"); done
+        docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+        docker buildx imagetools inspect "${TAGS%%,*}"
