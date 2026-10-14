@@ -204,6 +204,8 @@ report_tofu() {
   [ -n "$dirs" ] || { [ -f "report/$kind.sh" ] && return 0 || die "no modules/$kind directory"; }
   tf_files=$(find $dirs -name '*.tf' | sort)
   [ -n "$tf_files" ] || return 0
+  # Two modules may use different submodules of the same registry module,
+  # which is one line once the //submodule path is dropped; hence sort -u.
   while read -r line; do
     source=${line%%=*}; current=${line#*=}
     exact_version "$current" || continue
@@ -228,7 +230,7 @@ report_tofu() {
           echo "$name newer version $latest, current $current"
         fi ;;
     esac
-  done < <(sources_with_versions $tf_files)
+  done < <(sources_with_versions $tf_files) | sort -u
 }
 
 case "$KIND" in

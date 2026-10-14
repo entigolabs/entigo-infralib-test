@@ -105,8 +105,16 @@ jobs:
       timeout-minutes: 60
       run: |
         set -euo pipefail
-        .infralib-test/framework/scripts/report.sh "${{ matrix.kind }}" | tee report.txt
+        .infralib-test/framework/scripts/report.sh "${{ matrix.kind }}" > report.txt
         count=$(grep -c . report.txt || true)
+        # The report goes to the log and the job summary whether or not Slack
+        # is configured, and says so when there is nothing to report.
+        if [ "$count" = 0 ]; then
+          echo "${{ matrix.kind }}: everything is current"
+        else
+          echo "${{ matrix.kind }}: ${count} updates available"
+          cat report.txt
+        fi
         {
           echo "## ${{ matrix.kind }}"
           if [ "$count" = 0 ]; then echo "Everything is current."; else echo '```'; cat report.txt; echo '```'; fi
