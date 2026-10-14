@@ -1,0 +1,138 @@
+# Reusable workflow for module repositories: report the updates available to
+# what the modules depend on (Helm charts, Crossplane providers, OpenTofu
+# providers and modules), one job and one Slack message per kind, so that a
+# repository with many modules does not end up with one unreadable message.
+#
+#   on:
+#     schedule: [{cron: '0 8 * * 1'}]
+#     workflow_dispatch:
+#   jobs:
+#     report:
+#       uses: entigolabs/entigo-infralib-test/.github/workflows/module-report.yaml@main
+#       secrets: inherit
+#
+# The kinds are k8s (modules/k8s) and one per cloud directory under modules/
+# (modules/aws and modules/aws-v2 are both "aws"), plus any report/<kind>.sh
+# hook the repository has; scripts/report.sh of the framework does the
+# checking and runs the hook. With a SLACK_WEBHOOK_URL secret (plus
+# SLACK_USERNAME, SLACK_ICON_EMOJI) each kind's report is posted to Slack,
+# and so is a failure; without it the reports are only in the job summary.
+# The cloud credentials among the caller's secrets are passed on for hooks
+# that need them (an EKS AMI check asks SSM, say); the framework's own
+# checks only ask public registries.
+name: Module report
+
+on:
+  workflow_call:
+    inputs:
+      kinds:
+        description: comma separated kinds to report on; empty means every kind the repository has
+        type: string
+        default: ''
+      runs-on:
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  plan:
+    name: Kinds
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      kinds: ${{ steps.kinds.outputs.kinds }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Framework scripts
+      uses: actions/checkout@v4
+      with:
+        repository: entigolabs/entigo-infralib-test
+        ref: ${{ github.job_workflow_sha }}
+        path: .infralib-test/framework
+    - name: Select kinds
+      id: kinds
+      env:
+        KINDS: ${{ inputs.kinds }}
+      run: |
+        set -euo pipefail
+        selected=$(.infralib-test/framework/scripts/report.sh --list-kinds | while read -r kind; do
+          if [ -n "${KINDS}" ]; then
+            case ",${KINDS}," in *",${kind},"*) ;; *) continue ;; esac
+          fi
+          echo "$kind"
+        done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
+        echo "Kinds: ${selected}"
+        [ -n "${selected}" ] || { echo "::error::nothing to report on: no modules/<kind> directory or report/<kind>.sh matches" >&2; exit 1; }
+        # No brackets in the output, see module-nuke.yaml; the job rebuilds
+        # the JSON list.
+        echo "kinds=${selected}" >> "$GITHUB_OUTPUT"
+
+  report:
+    name: ${{ matrix.kind }}
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix:
+        kind: ${{ fromJson(format('[{0}]', needs.plan.outputs.kinds)) }}
+      fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      GOOGLE_PROJECT: ${{ secrets.GOOGLE_PROJECT }}
+      GOOGLE_REGION: ${{ secrets.GOOGLE_REGION }}
+      GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Framework scripts
+      # The scripts of the framework commit this workflow belongs to
+      # (job_workflow_sha; workflow_ref would be the caller's).
+      uses: actions/checkout@v4
+      with:
+        repository: entigolabs/entigo-infralib-test
+        ref: ${{ github.job_workflow_sha }}
+        path: .infralib-test/framework
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+      if: matrix.kind == 'google' || matrix.kind == 'oracle'
+      with:
+        google_credentials: ${{ matrix.kind == 'google' && secrets.GOOGLE_CREDENTIALS || '' }}
+        oci_config: ${{ matrix.kind == 'oracle' && secrets.OCI_CONFIG || '' }}
+        oci_private_key: ${{ matrix.kind == 'oracle' && secrets.OCI_PRIVATE_KEY || '' }}
+    - name: Report on ${{ matrix.kind }}
+      id: report
+      timeout-minutes: 60
+      run: |
+        set -euo pipefail
+        .infralib-test/framework/scripts/report.sh "${{ matrix.kind }}" | tee report.txt
+        count=$(grep -c . report.txt || true)
+        {
+          echo "## ${{ matrix.kind }}"
+          if [ "$count" = 0 ]; then echo "Everything is current."; else echo '```'; cat report.txt; echo '```'; fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "count=$count" >> "$GITHUB_OUTPUT"
+        { echo "report<<REPORT_EOF"; cat report.txt; echo "REPORT_EOF"; } >> "$GITHUB_OUTPUT"
+    - name: Slack message with the report
+      if: env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: ${{ steps.report.outputs.count == '0' && 'good' || '#EBEB00' }}
+        SLACK_MESSAGE: |
+          *${{ matrix.kind }}* of ${{ github.repository }}: ${{ steps.report.outputs.count == '0' && 'everything is current' || format('{0} updates available', steps.report.outputs.count) }}
+          ${{ steps.report.outputs.report }}
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
+        MSG_MINIMAL: actions url,commit
+    - name: Slack message about the failure
+      if: failure() && env.HAS_SLACK == 'true'
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: failure
+        SLACK_MESSAGE: "Failed to report on the ${{ matrix.kind }} updates of ${{ github.repository }}"
+        SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
+        SLACK_FOOTER: ""
