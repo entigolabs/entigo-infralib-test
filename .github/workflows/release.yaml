@@ -26,6 +26,7 @@ jobs:
         fetch-depth: 0
 
     - name: Require green Go and Images runs for this commit
+      id: images
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
@@ -35,16 +36,27 @@ jobs:
           echo "$wf for $GITHUB_SHA: $conclusion"
           [ "$conclusion" = success ] || { echo "::error::$wf has not succeeded for $GITHUB_SHA" >&2; exit 1; }
         done
-        for name in cli aws google oracle; do
+        images="cli aws google oracle"
+        for name in $images; do
           docker manifest inspect "entigolabs/entigo-infralib-test-$name:$GITHUB_SHA" >/dev/null 2>&1 \
             || { echo "::error::entigolabs/entigo-infralib-test-$name:$GITHUB_SHA is not in the registry" >&2; exit 1; }
         done
+        # The azure image is optional while its base image is only published
+        # as a dev tag (see images.yaml): a release without it is a release.
+        if docker manifest inspect "entigolabs/entigo-infralib-test-azure:$GITHUB_SHA" >/dev/null 2>&1; then
+          images="$images azure"
+        else
+          echo "::notice::no entigolabs/entigo-infralib-test-azure:$GITHUB_SHA; releasing without the azure image"
+        fi
+        echo "images=$images" >> "$GITHUB_OUTPUT"
 
     # The previous version is the highest vX.Y.Z git tag, not the latest GitHub
     # release: older versions were tagged without a release, and a repository
     # with only pre-releases has no "latest release" either.
     - name: Decide the version
       id: version
+      env:
+        IMAGES: ${{ steps.images.outputs.images }}
       run: |
         set -euo pipefail
         latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
@@ -60,7 +72,7 @@ jobs:
         # Refuse to overwrite anything: a published version is immutable.
         ! git ls-remote --exit-code --tags origin "refs/tags/$new" >/dev/null \
           || { echo "::error::tag $new already exists" >&2; exit 1; }
-        for name in cli aws google oracle; do
+        for name in ${IMAGES}; do
           ! docker manifest inspect "entigolabs/entigo-infralib-test-$name:$new" >/dev/null 2>&1 \
             || { echo "::error::entigolabs/entigo-infralib-test-$name:$new is already in the registry" >&2; exit 1; }
         done
@@ -76,9 +88,10 @@ jobs:
     - name: Tag the images of this commit as ${{ steps.version.outputs.new }} and latest
       env:
         NEW: ${{ steps.version.outputs.new }}
+        IMAGES: ${{ steps.images.outputs.images }}
       run: |
         set -euo pipefail
-        for name in cli aws google oracle; do
+        for name in ${IMAGES}; do
           image="entigolabs/entigo-infralib-test-$name"
           docker buildx imagetools create -t "$image:$NEW" -t "$image:latest" "$image:$GITHUB_SHA"
           echo "$image:$NEW -> $(docker buildx imagetools inspect "$image:$NEW" --format '{{json .Manifest.Digest}}')"
@@ -89,6 +102,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         NEW: ${{ steps.version.outputs.new }}
         LATEST: ${{ steps.version.outputs.latest }}
+        IMAGES: ${{ steps.images.outputs.images }}
       run: |
         set -euo pipefail
         git config user.name "GitHub Actions" && git config user.email "actions@github.com"
@@ -97,4 +111,4 @@ jobs:
         notes_args=(--generate-notes)
         [ -n "$LATEST" ] && notes_args+=(--notes-start-tag "$LATEST")
         gh release create "$NEW" --title "Release $NEW" "${notes_args[@]}" --latest \
-          --notes "Images: entigolabs/entigo-infralib-test-{cli,aws,google,oracle}:$NEW (built from $GITHUB_SHA)"
+          --notes "Images: entigolabs/entigo-infralib-test-{$(echo "$IMAGES" | tr ' ' ',')}:$NEW (built from $GITHUB_SHA)"

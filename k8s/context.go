@@ -19,7 +19,8 @@ import (
 // `aws eks update-kubeconfig` names it after the cluster ARN, which ends in
 // ":cluster/<name>"; `gcloud container clusters get-credentials` names it
 // "gke_<project>_<location>_<name>"; `oci ce cluster create-kubeconfig`
-// names it "context-<name>-<last 11 characters of the cluster OCID>". When
+// names it "context-<name>-<last 11 characters of the cluster OCID>"; `az aks
+// get-credentials` names it after the cluster itself. When
 // no context matches by name (an older oci CLI named the context after the
 // OCID alone), the cloud package's resolver decides, which needs that
 // package imported.
@@ -88,6 +89,8 @@ func kubeconfigHint(e *env.Environment, cluster string) string {
 		return fmt.Sprintf("run: aws eks update-kubeconfig --region %s --name %s", e.Region, cluster)
 	case env.CloudGoogle:
 		return fmt.Sprintf("run: gcloud container clusters get-credentials %s --region %s --project %s", cluster, e.Region, e.Project)
+	case env.CloudAzure:
+		return fmt.Sprintf("run: az aks get-credentials --resource-group %s-%s --name %s, then kubelogin convert-kubeconfig -l spn", e.Prefix, e.Region, cluster)
 	}
 	return fmt.Sprintf("run: oci ce cluster create-kubeconfig --cluster-id <id of %s> --region %s --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT", cluster, e.Region)
 }

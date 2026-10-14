@@ -71,9 +71,16 @@ environment variables:
   OCI_REGION, OCI_COMPARTMENT_ID  required for oracle environments
   OCI_CONFIG_FILE             oracle config (default ~/.oci/config); its directory is mounted
   OCI_KUBE_ENDPOINT           OKE endpoint the agent connects to (default PUBLIC_ENDPOINT)
+  AZURE_SUBSCRIPTION_ID, AZURE_LOCATION
+                              required for azure environments
+  AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+                              azure service principal; AZURE_CONFIG_DIR (default ~/.azure)
+                              is mounted when present, for az logins
+  AZURE_RESOURCE_GROUP        pre-made resource group of the agent (default <prefix>-<location>)
   KUBECONFIG                  kubeconfig holding the environments' cluster contexts
                               (aws eks update-kubeconfig / gcloud container clusters
-                              get-credentials / oci ce cluster create-kubeconfig)
+                              get-credentials / oci ce cluster create-kubeconfig /
+                              az aks get-credentials + kubelogin convert-kubeconfig)
 USAGE
 }
 
@@ -155,12 +162,14 @@ pull() {
 have_aws()    { { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_PROFILE:-}" ] || [ -f "$HOME/.aws/credentials" ]; } && [ -n "${AWS_REGION:-}" ]; }
 have_google() { { [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ -d "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}" ]; } && [ -n "${GOOGLE_PROJECT:-}" ] && [ -n "${GOOGLE_REGION:-}" ] && [ -n "${GOOGLE_ZONE:-}" ]; }
 have_oracle() { [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] && [ -n "${OCI_REGION:-}" ] && [ -n "${OCI_COMPARTMENT_ID:-}" ]; }
+have_azure()  { { [ -n "${AZURE_CLIENT_SECRET:-}" ] || [ -d "${AZURE_CONFIG_DIR:-$HOME/.azure}" ]; } && [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_LOCATION:-}" ]; }
 have_cloud()  { "have_$1"; }
 require_cloud() {
   case $1 in
     aws)    [ -n "${AWS_REGION:-}" ] || die "AWS_REGION is not set" ;;
     google) for v in GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE; do [ -n "${!v:-}" ] || die "$v is not set"; done ;;
     oracle) for v in OCI_REGION OCI_COMPARTMENT_ID; do [ -n "${!v:-}" ] || die "$v is not set"; done ;;
+    azure)  for v in AZURE_SUBSCRIPTION_ID AZURE_LOCATION; do [ -n "${!v:-}" ] || die "$v is not set"; done ;;
   esac
 }
 
@@ -211,6 +220,18 @@ base_args() {
       # The config file names its key_file by absolute path, so its directory
       # is mounted at the same path inside the container.
       ARGS+=(-v "$(dirname "$config"):$(dirname "$config"):ro" -e "OCI_CONFIG_FILE=$config")
+      ;;
+    azure)
+      # The agent and the tests read the same AZURE_* variables; kubelogin,
+      # which an AKS kubeconfig execs, knows the service principal by its
+      # own names.
+      for v in AZURE_SUBSCRIPTION_ID AZURE_LOCATION AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_RESOURCE_GROUP; do
+        [ -n "${!v:-}" ] && ARGS+=(-e "$v")
+      done
+      [ -z "${AZURE_CLIENT_SECRET:-}" ] || ARGS+=(-e "AAD_SERVICE_PRINCIPAL_CLIENT_ID=${AZURE_CLIENT_ID:-}" -e "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=${AZURE_CLIENT_SECRET}")
+      local azure="${AZURE_CONFIG_DIR:-$HOME/.azure}"
+      # az writes token caches into its config dir, so this one is writable.
+      [ -d "$azure" ] && ARGS+=(-v "$azure:/creds/azure" -e AZURE_CONFIG_DIR=/creds/azure)
       ;;
   esac
 }

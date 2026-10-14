@@ -3,8 +3,9 @@ description: >
   The executor builds the kubeconfig; the framework picks the context the
   cloud CLI gives each environment's cluster. Reads the environments through
   the repository's test.sh, so it runs after the clusters exist (after the
-  agent). EKS, GKE and OKE are covered. The OKE context is renamed to the
-  cluster name, since oci names it after the cluster OCID.
+  agent). EKS, GKE, OKE and AKS are covered. The OKE context is renamed to the
+  cluster name, since oci names it after the cluster OCID; the AKS kubeconfig
+  is converted to exec kubelogin with the service principal.
 inputs:
   environments:
     description: comma separated environment names; empty means all
@@ -38,9 +39,18 @@ runs:
             -v "$(dirname "$kube")":"$(dirname "$kube")" \
             "entigolabs/entigo-infralib-test-oracle:${version:-latest}" "$@"
         }
+        azure_tool() {
+          local tool=$1; shift
+          local cfg="${AZURE_CONFIG_DIR:-$HOME/.azure}"
+          docker run --rm --entrypoint "$tool" --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e AZURE_CONFIG_DIR="$cfg" \
+            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$cfg":"$cfg" \
+            "entigolabs/entigo-infralib-test-azure:${version:-latest}" "$@"
+        }
+        az() { azure_tool az "$@"; }
+        kubelogin() { azure_tool kubelogin "$@"; }
         # awk keeps empty columns apart; bash's read would collapse the tabs
         # around an empty zone or project and shift the cluster column.
-        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $8}' | while IFS=$'\t' read -r name cloud cluster; do
+        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $3, $8}' | while IFS=$'\t' read -r name cloud prefix cluster; do
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
@@ -65,6 +75,14 @@ runs:
               oci ce cluster create-kubeconfig --cluster-id "$id" --region "${OCI_REGION}" --file "$kube" \
                 --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT \
                 && kubectl config rename-context "$(kubectl config current-context)" "$cluster" \
+                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
+            azure)
+              [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -d "${AZURE_CONFIG_DIR:-$HOME/.azure}" ] || continue
+              # The cluster lives in the agent's resource group. The converted
+              # kubeconfig execs kubelogin as the service principal, which the
+              # orchestrator hands the test container in kubelogin's variables.
+              az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${AZURE_LOCATION}}" --name "$cluster" --file "$kube" --overwrite-existing \
+                && kubelogin convert-kubeconfig -l spn --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac
         done

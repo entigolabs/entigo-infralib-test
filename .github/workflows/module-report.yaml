@@ -82,6 +82,11 @@ jobs:
       GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
       OCI_REGION: ${{ secrets.OCI_REGION }}
       OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_LOCATION: ${{ secrets.AZURE_LOCATION }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ matrix.kind == 'azure' && secrets.AZURE_CLIENT_SECRET || '' }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
     steps:

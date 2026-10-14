@@ -74,6 +74,7 @@ const (
 	CloudAWS    = "aws"
 	CloudGoogle = "google"
 	CloudOracle = "oracle"
+	CloudAzure  = "azure"
 
 	StepTypeTerraform = "terraform"
 	StepTypeArgoCD    = "argocd-apps"
@@ -111,13 +112,15 @@ type Environment struct {
 	Sources []AgentSource
 	Steps   []Step
 
-	// Region, Zone, Project and CompartmentID come from the environment
-	// variables the agent reads too: AWS_REGION; GOOGLE_REGION, GOOGLE_ZONE,
-	// GOOGLE_PROJECT; OCI_REGION, OCI_COMPARTMENT_ID.
-	Region        string
-	Zone          string
-	Project       string
-	CompartmentID string
+	// Region, Zone, Project, CompartmentID and SubscriptionID come from the
+	// environment variables the agent reads too: AWS_REGION; GOOGLE_REGION,
+	// GOOGLE_ZONE, GOOGLE_PROJECT; OCI_REGION, OCI_COMPARTMENT_ID;
+	// AZURE_LOCATION, AZURE_SUBSCRIPTION_ID.
+	Region         string
+	Zone           string
+	Project        string
+	CompartmentID  string
+	SubscriptionID string
 
 	raw map[string]any
 }
@@ -188,9 +191,9 @@ func loadEnvironment(root, file string) (*Environment, error) {
 		return nil, fmt.Errorf("%s: file name must be <cloud>_<prefix>.yaml", rel)
 	}
 	switch cloud {
-	case CloudAWS, CloudGoogle, CloudOracle:
+	case CloudAWS, CloudGoogle, CloudOracle, CloudAzure:
 	default:
-		return nil, fmt.Errorf("%s: unknown cloud %q in the file name (aws, google or oracle)", rel, cloud)
+		return nil, fmt.Errorf("%s: unknown cloud %q in the file name (aws, google, oracle or azure)", rel, cloud)
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -267,6 +270,9 @@ func (e *Environment) loadCloudSettings() {
 	case CloudOracle:
 		e.Region = os.Getenv("OCI_REGION")
 		e.CompartmentID = os.Getenv("OCI_COMPARTMENT_ID")
+	case CloudAzure:
+		e.Region = os.Getenv("AZURE_LOCATION")
+		e.SubscriptionID = os.Getenv("AZURE_SUBSCRIPTION_ID")
 	}
 }
 
@@ -297,12 +303,23 @@ func (e *Environment) MustCompartmentID(t logger.T) string {
 	return e.CompartmentID
 }
 
+// MustSubscriptionID returns the Azure subscription, failing the test when unset.
+func (e *Environment) MustSubscriptionID(t logger.T) string {
+	t.Helper()
+	if e.SubscriptionID == "" {
+		t.Fatalf("AZURE_SUBSCRIPTION_ID is not set, environment %s needs it", e.Name)
+	}
+	return e.SubscriptionID
+}
+
 func (e *Environment) regionVar() string {
 	switch e.Cloud {
 	case CloudGoogle:
 		return "GOOGLE_REGION"
 	case CloudOracle:
 		return "OCI_REGION"
+	case CloudAzure:
+		return "AZURE_LOCATION"
 	}
 	return "AWS_REGION"
 }

@@ -47,6 +47,7 @@ COPY go.mod go.sum /opt/infralib-test/src/
 COPY aws/ /opt/infralib-test/src/aws/
 COPY google/ /opt/infralib-test/src/google/
 COPY oracle/ /opt/infralib-test/src/oracle/
+COPY azure/ /opt/infralib-test/src/azure/
 COPY k8s/ /opt/infralib-test/src/k8s/
 COPY env/ /opt/infralib-test/src/env/
 COPY tf/ /opt/infralib-test/src/tf/

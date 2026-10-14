@@ -51,6 +51,7 @@ jobs:
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
       HAS_GOOGLE: ${{ secrets.GOOGLE_CREDENTIALS != '' }}
       HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
+      HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
     - name: Latest release of this repository
       id: release
@@ -78,6 +79,7 @@ jobs:
             aws) [ "${HAS_AWS}" = true ] && echo "$name" ;;
             google) [ "${HAS_GOOGLE}" = true ] && echo "$name" ;;
             oracle) [ "${HAS_ORACLE}" = true ] && echo "$name" ;;
+            azure) [ "${HAS_AZURE}" = true ] && echo "$name" ;;
           esac
         done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
         echo "Environments: ${selected}"
@@ -105,6 +107,11 @@ jobs:
       GOOGLE_ZONE: ${{ secrets.GOOGLE_ZONE }}
       OCI_REGION: ${{ secrets.OCI_REGION }}
       OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_LOCATION: ${{ secrets.AZURE_LOCATION }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -120,6 +127,10 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+        azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+        azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+        azure_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
     - name: Provision ${{ matrix.environment }} from release ${{ needs.plan.outputs.release }}
       # The version is pinned to the release under test rather than left to the
       # agent's "latest": deterministic, and it sidesteps the agent checking a

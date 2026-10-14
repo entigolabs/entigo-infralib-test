@@ -144,11 +144,21 @@ nuke_oracle() {
 # ----------------------------------------------------------------- azure
 nuke_azure() {
   : "${AZURE_TENANT_ID:?}" "${AZURE_SUBSCRIPTION_ID:?}" "${AZURE_CLIENT_ID:?}" "${AZURE_CLIENT_SECRET:?}"
+  # azure-nuke's configuration names the tenant it runs against and the
+  # regions; ${AZURE_TENANT_ID}, ${AZURE_SUBSCRIPTION_ID} and ${AZURE_LOCATION}
+  # in the committed file are filled in from the environment here, so the
+  # file holds no identifiers.
+  if grep -q '\${AZURE_LOCATION}' "$CONFIG"; then : "${AZURE_LOCATION:?referenced by $CONFIG}"; fi
+  local rendered
+  rendered=$(mktemp)
+  sed -e "s/\\\${AZURE_TENANT_ID}/${AZURE_TENANT_ID}/g" -e "s/\\\${AZURE_SUBSCRIPTION_ID}/${AZURE_SUBSCRIPTION_ID}/g" \
+      -e "s/\\\${AZURE_LOCATION}/${AZURE_LOCATION:-}/g" "$CONFIG" > "$rendered"
   local args=(run --config /home/azure-nuke/config.yml --tenant-id "$AZURE_TENANT_ID" --subscription-id "$AZURE_SUBSCRIPTION_ID"
     --no-prompt --prompt-delay 3 --quiet)
   [ "$DRY_RUN" = false ] && args+=(--no-dry-run)
   docker run --rm -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET \
-    -v "$CONFIG":/home/azure-nuke/config.yml:ro "$AZURE_NUKE_IMAGE" "${args[@]}"
+    -v "$rendered":/home/azure-nuke/config.yml:ro "$AZURE_NUKE_IMAGE" "${args[@]}"
+  rm -f "$rendered"
 }
 
 attempt=1

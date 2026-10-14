@@ -170,13 +170,13 @@ func (c *Config) EnvironmentsOf(m Module) []*Environment {
 // Well known module sources the framework derives cluster and gateway
 // information from, per cloud.
 var (
-	clusterSources = map[string]string{CloudAWS: "aws/eks", CloudGoogle: "google/gke", CloudOracle: "oracle/oke"}
-	gatewaySources = map[string]string{CloudAWS: "aws-alb", CloudGoogle: "google-gateway", CloudOracle: "oracle-gateway"}
-	dnsSources     = map[string][]string{CloudAWS: {"aws-v2/route53", "aws/route53"}, CloudGoogle: {"google/dns"}, CloudOracle: {"oracle/dns"}}
+	clusterSources = map[string]string{CloudAWS: "aws/eks", CloudGoogle: "google/gke", CloudOracle: "oracle/oke", CloudAzure: "azure/aks"}
+	gatewaySources = map[string]string{CloudAWS: "aws-alb", CloudGoogle: "google-gateway", CloudOracle: "oracle-gateway", CloudAzure: "azure-gateway"}
+	dnsSources     = map[string][]string{CloudAWS: {"aws-v2/route53", "aws/route53"}, CloudGoogle: {"google/dns"}, CloudOracle: {"oracle/dns"}, CloudAzure: {"azure/dns"}}
 )
 
 // ClusterModule returns the placement of the environment's Kubernetes
-// cluster module (aws/eks, google/gke or oracle/oke). The cluster is named
+// cluster module (aws/eks, google/gke, oracle/oke or azure/aks). The cluster is named
 // <prefix>-<step>-<module> by the agent.
 func (c *Config) ClusterModule(e *Environment) (Placement, bool) {
 	return c.Find(e, clusterSources[e.Cloud])
@@ -193,7 +193,7 @@ func (c *Config) ClusterName(e *Environment) string {
 }
 
 // GatewayModule returns the placement of the environment's gateway module
-// (aws-alb, google-gateway or oracle-gateway).
+// (aws-alb, google-gateway, oracle-gateway or azure-gateway).
 func (c *Config) GatewayModule(e *Environment) (Placement, bool) {
 	return c.Find(e, gatewaySources[e.Cloud])
 }

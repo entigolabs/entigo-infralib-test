@@ -55,7 +55,7 @@ func TestLoadErrors(t *testing.T) {
 	for name, file := range map[string]struct{ name, content string }{
 		"no underscore":   {"aws", minimal},
 		"empty prefix":    {"aws_", minimal},
-		"bad cloud":       {"azure_p", minimal},
+		"bad cloud":       {"ibm_p", minimal},
 		"prefix mismatch": {"aws_p", "prefix: q\n" + minimal},
 		"no steps":        {"aws_p", "sources: []\n"},
 		"unnamed step":    {"aws_p", "steps:\n  - modules: [{source: a/b}]\n"},
