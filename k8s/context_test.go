@@ -15,6 +15,8 @@ func TestMatchingContexts(t *testing.T) {
 		"arn:aws:eks:us-east-1:123456789012:cluster/biz-infra-eks",
 		"gke_proj_europe-north1_exbiz-infra-gke",
 		"context-cwoke4rm6ba",
+		"context-exbiz-infra-oke-c6adjejugmq",
+		"context-expri-infra-oke-coqjchy5lja",
 		"minikube",
 	} {
 		kubeconfig.Contexts[name] = clientcmdapi.NewContext()
@@ -22,5 +24,7 @@ func TestMatchingContexts(t *testing.T) {
 	require.Equal(t, []string{"arn:aws:eks:eu-north-1:123456789012:cluster/exbiz-infra-eks"}, matchingContexts(kubeconfig, "aws", "exbiz-infra-eks"))
 	require.Equal(t, []string{"gke_proj_europe-north1_exbiz-infra-gke"}, matchingContexts(kubeconfig, "google", "exbiz-infra-gke"))
 	require.Empty(t, matchingContexts(kubeconfig, "aws", "infra-eks"), "suffix must match the whole name")
-	require.Empty(t, matchingContexts(kubeconfig, "oracle", "exbiz-infra-oke"), "OKE contexts carry no cluster name")
+	require.Equal(t, []string{"context-exbiz-infra-oke-c6adjejugmq"}, matchingContexts(kubeconfig, "oracle", "exbiz-infra-oke"))
+	require.Empty(t, matchingContexts(kubeconfig, "oracle", "infra-oke"), "the cluster name must match whole")
+	require.Empty(t, matchingContexts(kubeconfig, "oracle", "woke4rm6ba"), "an OCID-only context of an older oci CLI is the resolver's business")
 }

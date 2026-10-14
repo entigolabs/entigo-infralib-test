@@ -64,7 +64,7 @@ runs:
               if [ -z "$id" ] || [ "$id" = null ]; then echo "::warning::no kubeconfig for $name: cluster $cluster is not available"; continue; fi
               oci ce cluster create-kubeconfig --cluster-id "$id" --region "${OCI_REGION}" --file "$kube" \
                 --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT \
-                && kubectl config rename-context "context-c${id: -11}" "$cluster" \
+                && kubectl config rename-context "$(kubectl config current-context)" "$cluster" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac
         done

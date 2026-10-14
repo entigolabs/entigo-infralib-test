@@ -18,9 +18,11 @@ import (
 // cluster in the executor's kubeconfig (KUBECONFIG or ~/.kube/config):
 // `aws eks update-kubeconfig` names it after the cluster ARN, which ends in
 // ":cluster/<name>"; `gcloud container clusters get-credentials` names it
-// "gke_<project>_<location>_<name>". When no context matches by name (OKE
-// contexts carry no cluster name), the cloud package's resolver decides,
-// which needs that package imported.
+// "gke_<project>_<location>_<name>"; `oci ce cluster create-kubeconfig`
+// names it "context-<name>-<last 11 characters of the cluster OCID>". When
+// no context matches by name (an older oci CLI named the context after the
+// OCID alone), the cloud package's resolver decides, which needs that
+// package imported.
 func KubeContext(t logger.T, e *env.Environment) string {
 	t.Helper()
 	config := env.MustLoad(t)
@@ -70,6 +72,10 @@ func matchingContexts(kubeconfig *clientcmdapi.Config, cloud, cluster string) []
 			if strings.HasPrefix(name, "gke_") && strings.HasSuffix(name, "_"+cluster) {
 				matches = append(matches, name)
 			}
+		case env.CloudOracle:
+			if strings.HasPrefix(name, "context-"+cluster+"-") {
+				matches = append(matches, name)
+			}
 		}
 	}
 	sort.Strings(matches)
@@ -83,5 +89,5 @@ func kubeconfigHint(e *env.Environment, cluster string) string {
 	case env.CloudGoogle:
 		return fmt.Sprintf("run: gcloud container clusters get-credentials %s --region %s --project %s", cluster, e.Region, e.Project)
 	}
-	return fmt.Sprintf("run: oci ce cluster create-kubeconfig --cluster-id <id of %s> --region %s --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT, then kubectl config rename-context <context-c...> %s", cluster, e.Region, cluster)
+	return fmt.Sprintf("run: oci ce cluster create-kubeconfig --cluster-id <id of %s> --region %s --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT", cluster, e.Region)
 }

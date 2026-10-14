@@ -25,11 +25,12 @@ func init() {
 		t.Helper()
 		return ReadJSON(t, e, Bucket(t, e), file)
 	})
-	// The kubeconfig action renames the OKE context to the cluster name, which
-	// k8s.KubeContext matches first. A kubeconfig written by oci ce cluster
-	// create-kubeconfig alone names the context "context-c" plus the last 11
-	// characters of the cluster OCID, which the oke module outputs as
-	// cluster_id; this fallback resolves that.
+	// k8s.KubeContext matches an OKE context by name: the cluster name itself
+	// (the kubeconfig action renames it so) or "context-<cluster>-<last 11
+	// characters of the OCID>", which is what the oci CLI writes. Older oci
+	// CLIs named the context "context-c" plus those 11 characters, with no
+	// cluster name in it; this fallback resolves that from the cluster_id
+	// output of the oke module.
 	env.RegisterKubeContext(env.CloudOracle, func(t logger.T, e *env.Environment, cluster string) string {
 		t.Helper()
 		config := env.MustLoad(t)
