@@ -64,7 +64,7 @@ jobs:
       HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
       HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         ref: main
     - name: Select environments
@@ -115,7 +115,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         ref: main
     - name: Wait for other runs on the shared environments
@@ -138,7 +138,7 @@ jobs:
       run: ./test.sh test --env ${{ matrix.environment }}
     - name: Logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: logs-${{ matrix.environment }}
         path: logs/
@@ -167,7 +167,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         ref: main
         fetch-depth: 0

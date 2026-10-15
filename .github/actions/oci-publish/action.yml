@@ -27,7 +27,7 @@ runs:
   using: composite
   steps:
     - uses: sigstore/cosign-installer@v3
-    - uses: oras-project/setup-oras@v1
+    - uses: oras-project/setup-oras@v2
     - name: Log in to the registries
       shell: bash
       env:

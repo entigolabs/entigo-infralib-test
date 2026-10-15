@@ -50,7 +50,7 @@ jobs:
       HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
       HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Select environments
@@ -79,7 +79,7 @@ jobs:
     - name: Changed files
       id: changed
       if: inputs.modules == '' && github.event_name == 'push'
-      uses: tj-actions/changed-files@v45
+      uses: tj-actions/changed-files@v47
     - name: Modules to test
       id: modules
       env:
@@ -123,7 +123,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Wait for other runs on the shared environments
       uses: softprops/turnstyle@v3
       with:
@@ -159,7 +159,7 @@ jobs:
       run: ./test.sh test --env ${{ matrix.environment }} ${{ needs.plan.outputs.modules }}
     - name: Logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: logs-${{ matrix.environment }}
         path: logs/

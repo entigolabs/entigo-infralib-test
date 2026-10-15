@@ -62,7 +62,7 @@ jobs:
         [ -n "$tag" ] || { echo "::error::${GITHUB_REPOSITORY} has no release yet; run the release workflow first" >&2; exit 1; }
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
         echo "Latest release: $tag"
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         ref: ${{ steps.release.outputs.tag }}
     - name: Select environments
@@ -113,7 +113,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         ref: ${{ needs.plan.outputs.release }}
     - name: Wait for other runs on the shared environments
@@ -139,7 +139,7 @@ jobs:
       run: ./test.sh test --env ${{ matrix.environment }}
     - name: Logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: logs-${{ matrix.environment }}
         path: logs/

@@ -56,7 +56,7 @@ jobs:
       HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
       HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Select clouds
       id: clouds
       env:
@@ -125,11 +125,11 @@ jobs:
         SLACK_ICON_EMOJI: ${{ secrets.SLACK_ICON_EMOJI }}
         SLACK_FOOTER: ""
         MSG_MINIMAL: actions url
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Framework scripts
       # The scripts of the framework commit this workflow belongs to
       # (job_workflow_sha; workflow_ref would be the caller's).
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: entigolabs/entigo-infralib-test
         ref: ${{ github.job_workflow_sha }}

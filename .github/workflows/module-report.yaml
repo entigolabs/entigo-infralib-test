@@ -40,9 +40,9 @@ jobs:
     outputs:
       kinds: ${{ steps.kinds.outputs.kinds }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Framework scripts
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: entigolabs/entigo-infralib-test
         ref: ${{ github.job_workflow_sha }}
@@ -90,11 +90,11 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Framework scripts
       # The scripts of the framework commit this workflow belongs to
       # (job_workflow_sha; workflow_ref would be the caller's).
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: entigolabs/entigo-infralib-test
         ref: ${{ github.job_workflow_sha }}
