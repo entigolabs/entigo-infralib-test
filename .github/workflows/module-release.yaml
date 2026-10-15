@@ -11,14 +11,22 @@
 #       workflows: [Stable]
 #       types: [completed]
 #     workflow_dispatch:
+#       inputs:
+#         cloud: {type: choice, options: [all, aws, google, oracle, azure], default: all}
 #   jobs:
 #     release:
 #       if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-release.yaml@main
 #       with:
+#         clouds: ${{ inputs.cloud || '' }}
 #         oci_registries: ghcr.io/<org>/<repo>-release,public.ecr.aws/<alias>/<repo>-release   # optional
 #         release_repo: https://github.com/<org>/<repo>-release                                # optional
 #       secrets: inherit
+#
+# A run limited to some clouds or environments is a partial run: main is
+# applied to those and tested, and nothing is tagged, released or published.
+# A run that a stable run triggered does nothing at all when that stable run
+# was partial, which it shows by leaving no stable-release artifact.
 #
 # The version is <release_version.txt>.0 when the file's major.minor moved,
 # otherwise the latest release's patch plus one. OCI publishing logs in to
@@ -44,8 +52,12 @@ on:
         type: string
         default: ''
 
+      clouds:
+        description: comma separated clouds to run; empty or "all" means every cloud with credentials, anything else makes a partial run without a release
+        type: string
+        default: ''
       environments:
-        description: comma separated environments to run; empty means every environment with credentials
+        description: comma separated environments to run; empty means every environment with credentials, anything else makes a partial run without a release
         type: string
         default: ''
       runs-on:
@@ -56,24 +68,58 @@ jobs:
   plan:
     name: Environments
     runs-on: ${{ inputs.runs-on }}
+    permissions:
+      actions: read
+      contents: read
     outputs:
+      run: ${{ steps.stable.outputs.run }}
       environments: ${{ steps.envs.outputs.environments }}
+      release: ${{ steps.envs.outputs.release }}
     env:
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
       HAS_GOOGLE: ${{ secrets.GOOGLE_CREDENTIALS != '' }}
       HAS_ORACLE: ${{ secrets.OCI_CONFIG != '' }}
       HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
     steps:
+    - name: The stable run that triggered this one
+      id: stable
+      env:
+        GH_TOKEN: ${{ github.token }}
+        STABLE_RUN: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
+      run: |
+        set -euo pipefail
+        if [ -z "${STABLE_RUN}" ]; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # A complete stable run uploads a stable-release artifact (see
+        # module-stable.yaml); a partial one does not and releases nothing.
+        if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STABLE_RUN}/artifacts" --paginate --jq '.artifacts[].name' | grep -qx stable-release; then
+          echo "Stable run ${STABLE_RUN} covered every environment"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::stable run ${STABLE_RUN} was a partial run, nothing to release"
+          echo "run=false" >> "$GITHUB_OUTPUT"
+        fi
     - uses: actions/checkout@v7
+      if: steps.stable.outputs.run == 'true'
       with:
         ref: main
     - name: Select environments
       id: envs
+      if: steps.stable.outputs.run == 'true'
       env:
+        CLOUDS: ${{ inputs.clouds }}
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
+        # "all" is what a dispatch choice input says for every cloud; a GitHub
+        # expression cannot turn it into an empty string (a && '' || b yields b).
+        [ "${CLOUDS}" != all ] || CLOUDS=""
         selected=$(./test.sh envs --tsv | while IFS=$'\t' read -r name cloud rest; do
+          if [ -n "${CLOUDS}" ]; then
+            case ",${CLOUDS}," in *",${cloud},"*) ;; *) continue ;; esac
+          fi
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
@@ -85,15 +131,22 @@ jobs:
           esac
         done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
         echo "Environments: ${selected}"
-        [ -n "${selected}" ] || { echo "::error::no environment has credentials" >&2; exit 1; }
+        [ -n "${selected}" ] || { echo "::error::no selected environment has credentials" >&2; exit 1; }
         # No braces or brackets in the output: GitHub drops a job output that
         # contains any line of a multi-line secret, and a JSON credentials
         # secret has lines that are just { or }. The job rebuilds the JSON.
         echo "environments=${selected}" >> "$GITHUB_OUTPUT"
+        if [ -n "${CLOUDS}${ENVIRONMENTS}" ]; then
+          echo "::notice::partial run of ${CLOUDS:-${ENVIRONMENTS}}: main is applied and tested, nothing is released"
+          echo "release=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "release=true" >> "$GITHUB_OUTPUT"
+        fi
 
   environment:
     name: ${{ matrix.environment }}
     needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ inputs.runs-on }}
     strategy:
       matrix:
@@ -156,7 +209,8 @@ jobs:
 
   release:
     name: Release
-    needs: environment
+    needs: [plan, environment]
+    if: needs.plan.outputs.release == 'true'
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write

@@ -5,10 +5,13 @@
 #   on:
 #     schedule: [{cron: '31 3 * * 1-5'}]
 #     workflow_dispatch:
+#       inputs:
+#         cloud: {type: choice, options: [all, aws, google, oracle, azure], default: all}
 #   jobs:
 #     stable:
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-stable.yaml@main
 #       with:
+#         clouds: ${{ inputs.cloud || '' }}
 #         release_repo: https://github.com/<org>/<repo>-release   # optional
 #       secrets: inherit
 #
@@ -18,6 +21,10 @@
 # two match. Credentials as in module-pull-request.yaml. With a
 # SLACK_WEBHOOK_URL secret (plus SLACK_USERNAME, SLACK_ICON_EMOJI) a failed
 # environment is posted to Slack; without it nothing is posted.
+#
+# A run limited to some clouds or environments is a partial run: it proves
+# nothing about the release as a whole, so it leaves no stable-release
+# artifact, and the module-release.yaml run that follows it does nothing.
 name: Module stable
 
 on:
@@ -32,8 +39,12 @@ on:
         type: string
         default: ''
 
+      clouds:
+        description: comma separated clouds to run; empty or "all" means every cloud with credentials, anything else makes a partial run
+        type: string
+        default: ''
       environments:
-        description: comma separated environments to run; empty means every environment with credentials
+        description: comma separated environments to run; empty means every environment with credentials, anything else makes a partial run
         type: string
         default: ''
       runs-on:
@@ -46,6 +57,7 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     outputs:
       environments: ${{ steps.envs.outputs.environments }}
+      partial: ${{ steps.envs.outputs.partial }}
       release: ${{ steps.release.outputs.tag }}
     env:
       HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
@@ -68,10 +80,17 @@ jobs:
     - name: Select environments
       id: envs
       env:
+        CLOUDS: ${{ inputs.clouds }}
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
+        # "all" is what a dispatch choice input says for every cloud; a GitHub
+        # expression cannot turn it into an empty string (a && '' || b yields b).
+        [ "${CLOUDS}" != all ] || CLOUDS=""
         selected=$(./test.sh envs --tsv | while IFS=$'\t' read -r name cloud rest; do
+          if [ -n "${CLOUDS}" ]; then
+            case ",${CLOUDS}," in *",${cloud},"*) ;; *) continue ;; esac
+          fi
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
@@ -83,11 +102,17 @@ jobs:
           esac
         done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
         echo "Environments: ${selected}"
-        [ -n "${selected}" ] || { echo "::error::no environment has credentials" >&2; exit 1; }
+        [ -n "${selected}" ] || { echo "::error::no selected environment has credentials" >&2; exit 1; }
         # No braces or brackets in the output: GitHub drops a job output that
         # contains any line of a multi-line secret, and a JSON credentials
         # secret has lines that are just { or }. The job rebuilds the JSON.
         echo "environments=${selected}" >> "$GITHUB_OUTPUT"
+        if [ -n "${CLOUDS}${ENVIRONMENTS}" ]; then
+          echo "::notice::partial run of ${CLOUDS:-${ENVIRONMENTS}}: no release follows it"
+          echo "partial=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "partial=false" >> "$GITHUB_OUTPUT"
+        fi
 
   environment:
     name: ${{ matrix.environment }}
@@ -159,5 +184,23 @@ jobs:
     name: Stable
     needs: [plan, environment]
     runs-on: ${{ inputs.runs-on }}
+    env:
+      RELEASE: ${{ needs.plan.outputs.release }}
+      PARTIAL: ${{ needs.plan.outputs.partial }}
     steps:
-    - run: echo "Release ${{ needs.plan.outputs.release }} is stable on every environment"
+    - name: Stable release marker
+      # The release workflow that a stable run triggers looks for this
+      # artifact in the run; a partial run leaves none, and that release run
+      # then does nothing.
+      run: |
+        if [ "${PARTIAL}" = true ]; then
+          echo "Release ${RELEASE} is stable on the selected environments only; no stable-release marker, so no release follows"
+        else
+          echo "Release ${RELEASE} is stable on every environment"
+          echo "${RELEASE}" > stable-release.txt
+        fi
+    - if: env.PARTIAL != 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: stable-release
+        path: stable-release.txt
