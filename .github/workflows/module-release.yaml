@@ -25,8 +25,9 @@
 #
 # A run limited to some clouds or environments is a partial run: main is
 # applied to those and tested, and nothing is tagged, released or published.
-# A run that a stable run triggered does nothing at all when that stable run
-# was partial, which it shows by leaving no stable-release artifact.
+# Only a scheduled stable run is followed by a release: a run triggered by a
+# stable run somebody dispatched (a workflow_run event carries none of that
+# run's inputs, so this is the one distinction there is) does nothing at all.
 #
 # The version is <release_version.txt>.0 when the file's major.minor moved,
 # otherwise the latest release's patch plus one. OCI publishing logs in to
@@ -68,9 +69,6 @@ jobs:
   plan:
     name: Environments
     runs-on: ${{ inputs.runs-on }}
-    permissions:
-      actions: read
-      contents: read
     outputs:
       run: ${{ steps.stable.outputs.run }}
       environments: ${{ steps.envs.outputs.environments }}
@@ -84,21 +82,13 @@ jobs:
     - name: The stable run that triggered this one
       id: stable
       env:
-        GH_TOKEN: ${{ github.token }}
         STABLE_RUN: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
+        STABLE_EVENT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event || '' }}
       run: |
-        set -euo pipefail
-        if [ -z "${STABLE_RUN}" ]; then
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        # A complete stable run uploads a stable-release artifact (see
-        # module-stable.yaml); a partial one does not and releases nothing.
-        if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STABLE_RUN}/artifacts" --paginate --jq '.artifacts[].name' | grep -qx stable-release; then
-          echo "Stable run ${STABLE_RUN} covered every environment"
+        if [ -z "${STABLE_RUN}" ] || [ "${STABLE_EVENT}" = schedule ]; then
           echo "run=true" >> "$GITHUB_OUTPUT"
         else
-          echo "::notice::stable run ${STABLE_RUN} was a partial run, nothing to release"
+          echo "::notice::stable run ${STABLE_RUN} was dispatched by hand (${STABLE_EVENT}), nothing to release; dispatch this workflow for a release"
           echo "run=false" >> "$GITHUB_OUTPUT"
         fi
     - uses: actions/checkout@v7
