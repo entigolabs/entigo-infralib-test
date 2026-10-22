@@ -24,8 +24,11 @@ set -euo pipefail
 TFLINT_IMAGE="${TFLINT_IMAGE:-ghcr.io/terraform-linters/tflint:v0.64.0}"
 HELM_IMAGE="${HELM_IMAGE:-alpine/helm:3.22.1}"
 KUBE_SCORE_IMAGE="${KUBE_SCORE_IMAGE:-zegl/kube-score:v1.20.0}"
+# pod-probes-identical: upstream charts commonly reuse one probe for liveness
+# and readiness; the platform's charts inherit that from their subcharts.
 KUBE_SCORE_DEFAULT_IGNORE=(container-image-pull-policy container-security-context-readonlyrootfilesystem
-  container-security-context-user-group-id deployment-has-poddisruptionbudget statefulset-has-servicename)
+  container-security-context-user-group-id deployment-has-poddisruptionbudget statefulset-has-servicename
+  pod-probes-identical)
 
 die() { echo "static.sh: $*" >&2; exit 2; }
 log() { printf '\033[1;34m==> %s\033[0m\n' "$*" >&2; }
@@ -73,7 +76,10 @@ kube_score_ignore() {
 check_terraform() {
   local module=$1
   log "tflint $module"
-  run "$TFLINT_IMAGE" "$ROOT/$module" -- --disable-rule terraform_required_providers
+  # The whole repository is mounted and tflint changes into the module, so
+  # a module that includes a sibling (oke and its oke-node-pool, through a
+  # symlink or a ../ source) finds it.
+  run "$TFLINT_IMAGE" "$ROOT" -- --chdir "$module" --disable-rule terraform_required_providers
 }
 
 check_chart() {
