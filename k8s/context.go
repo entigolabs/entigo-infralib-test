@@ -90,7 +90,7 @@ func kubeconfigHint(e *env.Environment, cluster string) string {
 	case env.CloudGoogle:
 		return fmt.Sprintf("run: gcloud container clusters get-credentials %s --region %s --project %s", cluster, e.Region, e.Project)
 	case env.CloudAzure:
-		return fmt.Sprintf("run: az aks get-credentials --resource-group %s-%s --name %s, then kubelogin convert-kubeconfig -l spn", e.Prefix, e.Region, cluster)
+		return fmt.Sprintf("run: az aks get-credentials --resource-group %s-%s --name %s, then kubelogin convert-kubeconfig -l spn --client-id <client id> --tenant-id <tenant id>", e.Prefix, e.Region, cluster)
 	}
 	return fmt.Sprintf("run: oci ce cluster create-kubeconfig --cluster-id <id of %s> --region %s --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT", cluster, e.Region)
 }

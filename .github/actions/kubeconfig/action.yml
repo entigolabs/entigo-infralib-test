@@ -84,12 +84,15 @@ runs:
             azure)
               [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_CLIENT_SECRET:-}" ] || continue
               # The cluster lives in the agent's resource group. The converted
-              # kubeconfig execs kubelogin as the service principal, which the
-              # orchestrator hands the test container in kubelogin's variables.
+              # kubeconfig execs kubelogin as the service principal: client and
+              # tenant id go into the kubeconfig (convert-kubeconfig insists on
+              # them as flags), the secret comes from the
+              # AAD_SERVICE_PRINCIPAL_CLIENT_SECRET variable the orchestrator
+              # hands the test container.
               az login --service-principal -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}" --tenant "${AZURE_TENANT_ID}" --output none \
                 && az account set --subscription "${AZURE_SUBSCRIPTION_ID}" \
                 && az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${AZURE_LOCATION}}" --name "$cluster" --file "$kube" --overwrite-existing \
-                && kubelogin convert-kubeconfig -l spn --kubeconfig "$kube" \
+                && kubelogin convert-kubeconfig -l spn --client-id "${AZURE_CLIENT_ID}" --tenant-id "${AZURE_TENANT_ID}" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac
         done
