@@ -11,6 +11,10 @@
 # branch, before they start; the others only wait for runs of their own branch,
 # since their per-branch steps cannot collide.
 #
+# Alongside, a static job per changed module runs scripts/static.sh (tflint;
+# helm lint, helm template and kube-score) without credentials, so a lint
+# finding is known before the environments are touched.
+#
 # In the module repository:
 #
 #   on:
@@ -98,6 +102,28 @@ jobs:
           fi
         done
         echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
+
+  static:
+    name: static ${{ matrix.module }}
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      matrix:
+        module: ${{ fromJson(format('[{0}]', needs.detect.outputs.modules)) }}
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v7
+    - name: Framework scripts
+      # The scripts of the framework commit this workflow belongs to
+      # (job_workflow_sha; workflow_ref would be the caller's).
+      uses: actions/checkout@v7
+      with:
+        repository: entigolabs/entigo-infralib-test
+        ref: ${{ github.job_workflow_sha }}
+        path: .infralib-test/framework
+    - name: Static checks of ${{ matrix.module }}
+      run: .infralib-test/framework/scripts/static.sh ${{ matrix.module }}
 
   test:
     name: ${{ matrix.module }}

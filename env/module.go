@@ -44,6 +44,11 @@ type ModuleMeta struct {
 	// (external-dns, argocd, a gateway controller). A k8s module still gets a
 	// step of its own; a terraform module runs inside its regular step.
 	PinStep bool `json:"pin_step,omitempty"`
+	// KubeScoreIgnore lists kube-score checks the static check of a k8s
+	// module skips on top of the framework's defaults, by check id
+	// (pod-networkpolicy, container-resources ...). For charts whose
+	// upstream parts legitimately fail a check, with a comment saying why.
+	KubeScoreIgnore []string `json:"kube_score_ignore,omitempty"`
 }
 
 // IsK8s reports whether the module is a Kubernetes (argocd-apps) module.

@@ -207,6 +207,13 @@ func WaitUntilCrossplaneResourceAvailable(t logger.T, c *Client, resource schema
 	return waitUntilObjectAvailable(t, c, available(resource, "", name).with(isCrossplaneObjectAvailable, NewCrossplaneObjectNotAvailable), retries, sleepBetweenRetries)
 }
 
+// WaitUntilNamespacedCrossplaneResourceAvailable is WaitUntilCrossplaneResourceAvailable
+// for a namespaced managed resource (Crossplane v2) in the client's namespace.
+func WaitUntilNamespacedCrossplaneResourceAvailable(t logger.T, c *Client, resource schema.GroupVersionResource, name string, retries int, sleepBetweenRetries time.Duration) (*unstructured.Unstructured, error) {
+	t.Helper()
+	return waitUntilObjectAvailable(t, c, available(resource, c.Namespace, name).with(isCrossplaneObjectAvailable, NewCrossplaneObjectNotAvailable), retries, sleepBetweenRetries)
+}
+
 func DeleteCrossplaneResource(t logger.T, c *Client, resource schema.GroupVersionResource, name string) error {
 	t.Helper()
 	logger.Logf(t, "Deleting %s %s", resource.Resource, name)

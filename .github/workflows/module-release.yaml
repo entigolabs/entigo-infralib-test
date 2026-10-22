@@ -64,6 +64,13 @@ on:
       runs-on:
         type: string
         default: ubuntu-latest
+    outputs:
+      version:
+        description: the release tag main carries after the run (vX.Y.Z), empty for a partial run
+        value: ${{ jobs.release.outputs.version }}
+      released:
+        description: "true when this run created the release, for steps that only a new release needs (retagging images, say)"
+        value: ${{ jobs.release.outputs.released }}
 
 jobs:
   plan:
@@ -202,6 +209,9 @@ jobs:
     needs: [plan, environment]
     if: needs.plan.outputs.release == 'true'
     runs-on: ${{ inputs.runs-on }}
+    outputs:
+      version: ${{ steps.version.outputs.new }}
+      released: ${{ steps.version.outputs.needed == 'true' && steps.version.outputs.exists != 'true' }}
     permissions:
       contents: write
       packages: write

@@ -14,7 +14,7 @@ A module repository keeps its tests as ordinary Go tests next to each module. Th
 
 ## Status
 
-Scaffolding. Nothing here has run against a cloud yet. See [Roadmap](#roadmap).
+In use: the example repository runs its pull request, main, stable and release workflows on AWS, Google Cloud and Oracle from this framework, and entigo-infralib's own tests are moving over. See [Roadmap](#roadmap).
 
 ## How a module repository is laid out
 
@@ -79,7 +79,10 @@ Optional, one file per module, read with strict keys. It holds what the framewor
 
 ```yaml
 pin_step: true
+kube_score_ignore: [pod-networkpolicy]   # the vendored upstream chart ships no NetworkPolicy
 ```
+
+`kube_score_ignore` lists kube-score checks the static check of a chart skips on top of the framework's defaults, by check id, for what an upstream part of the chart fails by design; say why in a comment. See Running below.
 
 `pin_step` is for modules that cannot be installed twice on one environment, or whose second installation would hide whether the branch's one works: external-dns, argocd, a gateway controller, an aws-alb, a karpenter. A pull request normally tests a module in a per-branch step under a branch-prefixed name next to the regular installation. A pinned module keeps its regular name instead, so the pull request replaces the shared installation for its test, and the installation keeps that version until the module itself is merged, or the next stable or release run puts everything back to its release. A pinned k8s module still runs in a step of its own, so nothing else of its regular step is applied. A pinned terraform module runs inside its regular step together with the other modules of that step.
 
@@ -132,7 +135,7 @@ func testRoutePublic(t *testing.T, e *env.Environment) {
 func testRouteAbsent(t *testing.T, e *env.Environment) { /* assert no HTTPRoute exists */ }
 ```
 
-A terraform module test reads its step's OpenTofu outputs with `tf.Get(t, e)`, which needs the cloud package imported for its output reader (`import _ "github.com/entigolabs/entigo-infralib-test/aws"`); k8s tests need no cloud package.
+A terraform module test reads its step's OpenTofu outputs with `tf.Get(t, e)`, which needs the cloud package imported for its output reader (`import _ "github.com/entigolabs/entigo-infralib-test/aws"`); k8s tests need no cloud package. A route check names the HTTPRoute to probe, or passes `""` for the namespace's only one. A test that talks to a workload without a route uses `k8s.PortForwardService(t, c, service, port)`, which forwards a local port to a pod of the Service the way `kubectl port-forward` does.
 
 Tests never hold cloud account ids, cluster names or hostnames: the cluster is derived from the environment's cluster module, routes and gateways are read from the cluster. Where a module was applied comes from the generated agent config (`env.ModulePlacement`), so the same test works in a regular step and in a per-branch step. Credentials and the kubeconfig are the executor's; the framework only picks the context.
 
@@ -148,9 +151,12 @@ Parallelism, from the outside in: the orchestrator runs the agent for every envi
 modules/k8s/hello-world/test.sh        the same, from the module's directory (templates/module-test.sh)
 ./test.sh --env aws_biz test           only the tests, environments already provisioned
 ./test.sh --destroy modules/aws/foo    tear the per-module step down afterwards
+./test.sh static modules/k8s/hello-world  static checks only, no cloud: tflint, or helm lint + helm template + kube-score
 ./test.sh envs | generate | agent | shell ENV
 ./test.sh --help
 ```
+
+`static` needs no credentials: a terraform module is linted with tflint (the `terraform_required_providers` rule is off, since the agent generates the providers), a chart gets `helm lint --strict`, a `helm template` render and a kube-score of the result, with the chart's `test/static_values.yaml` when it has one and the kube-score checks of `test/module.yaml`'s `kube_score_ignore` skipped on top of the defaults every platform chart fails by design (pull policy, read-only root filesystem, user ids, pod disruption budgets, statefulset service names). The tools run as pinned containers (`scripts/static.sh`). The pull request workflow runs the same checks for every changed module, in parallel with the tests.
 
 `test.sh` is a 20-line bootstrap committed in the module repository (`templates/test.sh`), and `modules/<type>/<name>/test.sh` a 7-line hand-over to it (`templates/module-test.sh`). Neither knows anything about clouds or environments: the bootstrap pins `INFRALIB_TEST_VERSION`, extracts `scripts/` from the `entigo-infralib-test-cli` image of that version into the git-ignored `.infralib-test/` and runs the orchestrator, which
 
@@ -180,7 +186,7 @@ Tags: pull request `dev`; main `<sha>` and `main`. Versions are made by the `Rel
 
 Six reusable workflows, called with `secrets: inherit`. Slack is optional: with a `SLACK_WEBHOOK_URL` secret (plus `SLACK_USERNAME` and `SLACK_ICON_EMOJI`) the main, stable, release, nuke and report workflows post failures, the release workflow also posts each published release with its notes, the report workflow posts each kind's report, and a nuke somebody dispatched is announced; without the secret nothing is posted and nothing complains. Pull request runs never post, their status is on the pull request. Credentials and regions come from the caller's secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `GOOGLE_CREDENTIALS`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_CONFIG`, `OCI_PRIVATE_KEY`, `OCI_REGION`, `OCI_COMPARTMENT_ID`; `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_LOCATION` (a service principal; the nuke needs no location). The clouds whose secrets are set are the ones whose environments run. The ones that run tests build the kubeconfig for EKS, GKE, OKE and AKS from the environments' cluster modules (the OKE context, which oci names `context-<cluster>-<OCID suffix>`, is renamed to the cluster name; the AKS one is fetched after an az login of the kubeconfig action's own and converted to exec kubelogin as the service principal) (`.github/actions/kubeconfig`) and upload `logs/`.
 
-- `module-pull-request.yaml`: tests the modules a pull request changed, one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name); a module with `pin_step` is applied to its regular step instead and such a run waits for every other run of the workflow first (see `test/module.yaml`). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
+- `module-pull-request.yaml`: runs the static checks of the modules a pull request changed (one job per module, no credentials), and tests them one at a time, each in a per-branch step on the shared environments (k8s applications get a branch-prefixed name); a module with `pin_step` is applied to its regular step instead and such a run waits for every other run of the workflow first (see `test/module.yaml`). The steps stay: recreating a cluster on every push would be wasteful, and test environments are nuked daily. `./test.sh --destroy modules/x` tears one down by hand.
 - `module-main.yaml`: after a merge to main, one job per environment applies the modules the push changed under their regular names (`--in-place`) and runs their tests. Only those modules are applied: a module that did not change is left as it is, so a pinned module someone is still working on in a pull request is not put back to main by an unrelated merge. When the push changed no module (an environment file, say) every step is applied and every module is tested. The modules come from the repository's `main` branch over git, as in the release workflow, never from the checkout: a mounted path becomes a `file://` source in the ArgoCD Applications that only lives as long as the repo-server pod that received it. Paths are for pull requests and local runs. Nothing is tagged.
 - `module-stable.yaml`: one job per environment that provisions the latest release of the repository and runs the tests of that release; a final `Stable` job gates on all of them. The modules come from `source` when given (for example an `oci://` registry), else from `release_repo`, else from the repository itself. A dispatch can restrict the run to some `clouds` (the callers offer the same `cloud` choice as the nuke) or `environments`. Only a scheduled stable run is followed by a release: a dispatched one, partial or not, triggers nothing, and the release workflow is dispatched by hand when a release is wanted after it.
 - `module-nuke.yaml`: one job per cloud that deletes everything in the test account that `nuke/<cloud>.yaml` does not keep; see Nuking the test accounts below.
@@ -189,7 +195,7 @@ Six reusable workflows, called with `secrets: inherit`. Slack is optional: with 
   - `oci_registries`: charts (`<registry>/k8s/<chart>:<version>`), OpenTofu modules (`<registry>/<type>/<module>:<version>`), an SBOM attached to each, and a cosign-signed `index:<version>` holding the released tree, `manifest.json` and an index SBOM. Pushed to the first registry and mirrored byte-identically to the rest; ghcr.io logs in with the run's token, public.ecr.aws with the AWS secrets and creates missing repositories. The release gets `manifest.json` and the index zip as assets, which also mark completion. The agent consumes it as `oci://<registry>`. Note that OpenTofu cannot download modules from ghcr.io anonymously (ghcr denies its token probe), so an agent without source credentials should be pointed at the ECR Public mirror, as entigo-infralib's own release README does for AWS.
   - `release_repo`: `modules/` without tests pushed over SSH (`SSH_PRIVATE_KEY`, a deploy key with write access), its tag marking completion. This is how entigo-infralib-release is made; it predates OCI and is kept for compatibility.
 
-  An interrupted run resumes whatever destination is missing on the next run.
+  An interrupted run resumes whatever destination is missing on the next run. The workflow outputs `version` (the tag main carries after the run) and `released` (true when the run created it), for a caller job that only a new release needs, such as retagging images with the version.
 
 ## Nuking the test accounts
 
@@ -205,14 +211,12 @@ Test environments are thrown away daily and provisioned again by the stable run,
 
 ## Roadmap
 
-In order:
+Done: the example repository end to end on AWS, Google Cloud and Oracle; nuke and update report shipped with the framework; static checks in the pull request workflow. Next:
 
-1. Publish the images and run the example repository end to end on AWS; fix what that finds.
-2. Nuke of test accounts, shipped with the framework.
-4. Google and Oracle environments in the example.
-5. Version report (`report.sh`) for consumers.
-6. Migrate `entigo-infralib` on a branch.
-7. Azure end to end: environments (`azure_<prefix>.yaml`), the `azure` state reader (Blob Storage of the agent's storage account in `<prefix>-<location>`), the image, the credentials and kubeconfig actions and the workflows are in place, untested against a cloud until the agent's Azure support (entigo-infralib-agent #78) and entigo-infralib's Azure modules (#1883) are released.
+1. Migrate `entigo-infralib` (in progress on a branch).
+2. Azure end to end: environments (`azure_<prefix>.yaml`), the `azure` state reader (Blob Storage of the agent's storage account in `<prefix>-<location>`), the image, the credentials and kubeconfig actions and the workflows are in place; the first real run waits for an agent release with Azure support (entigo-infralib-agent #78, merged) and the entigo-infralib Azure environments.
+3. GitLab CI: the orchestrator without docker inside the test image, and OCI publishing as a script, so a repository on GitLab runners can test and release with the same images.
+4. A region per environment: a module whose resources only exist in one region (AWS billing alarms live in us-east-1) cannot be tested while the region is a single variable per cloud.
 ## Development
 
 ```

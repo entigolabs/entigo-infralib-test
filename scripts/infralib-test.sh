@@ -26,6 +26,9 @@ commands:
              with --all, every step of the selected environments
   envs       list the environments of the repository (--tsv for scripts)
   shell      open a shell in the test image of an environment: test.sh shell ENV
+  static     static checks of the given modules (all without arguments), no
+             cloud needed: tflint for terraform modules, helm lint, helm
+             template and kube-score for charts (scripts/static.sh)
 
 options:
   -e, --env NAME        environment to use (repeatable). Default: every
@@ -108,7 +111,7 @@ QUIET=false
 VERBOSE=false
 
 case "${1:-}" in
-  run|agent|test|generate|destroy|envs|shell) COMMAND=$1; shift ;;
+  run|agent|test|generate|destroy|envs|shell|static) COMMAND=$1; shift ;;
 esac
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -438,6 +441,9 @@ run_tests() {
 
 # ---------------------------------------------------------------- commands
 case $COMMAND in
+  static)
+    exec "$(dirname "${BASH_SOURCE[0]}")/static.sh" --root "$ROOT" "${MODULES[@]}"
+    ;;
   envs)
     load_environments
     if [ "$TSV" = true ]; then printf '%s\n' "${ENV_ROWS[@]}"; else run_in cli -- infralib-test envs; fi

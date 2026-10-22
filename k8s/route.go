@@ -3,9 +3,11 @@ package k8s
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/entigolabs/entigo-infralib-test/logger"
@@ -55,9 +57,48 @@ func IsInternalAddress(address string) bool {
 	return false
 }
 
+// HTTPRouteNamesE lists the HTTPRoutes of the client's namespace.
+func (c *Client) HTTPRouteNamesE() ([]string, error) {
+	list, err := c.ListObjectsE(HTTPRoutes, c.Namespace, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("httproutes in %s: %w", c.Namespace, err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, item := range list.Items {
+		names = append(names, item.GetName())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// routeName resolves an empty route name to the one HTTPRoute of the client's
+// namespace, so a test of a module with a single route need not know what the
+// chart calls it. Several routes, or none, are an error naming them.
+func (c *Client) routeName(name string) (string, error) {
+	if name != "" {
+		return name, nil
+	}
+	names, err := c.HTTPRouteNamesE()
+	if err != nil {
+		return "", err
+	}
+	switch len(names) {
+	case 1:
+		return names[0], nil
+	case 0:
+		return "", fmt.Errorf("namespace %s has no httproute", c.Namespace)
+	default:
+		return "", fmt.Errorf("namespace %s has %d httproutes (%s), name the one to check", c.Namespace, len(names), strings.Join(names, ", "))
+	}
+}
+
 // RouteE reads the HTTPRoute of the given name in the client's namespace and
-// its parent Gateway.
+// its parent Gateway. An empty name selects the namespace's only HTTPRoute.
 func (c *Client) RouteE(name string) (Route, error) {
+	name, err := c.routeName(name)
+	if err != nil {
+		return Route{}, err
+	}
 	route, err := c.GetObjectE(HTTPRoutes, c.Namespace, name)
 	if err != nil {
 		return Route{}, fmt.Errorf("httproute %s/%s: %w", c.Namespace, name, err)
@@ -153,8 +194,13 @@ func WaitUntilRouteReachable(t logger.T, c *Client, name string, retries int, sl
 }
 
 // WaitUntilRouteAnswers is WaitUntilRouteReachable for a path and status code.
+// An empty name selects the namespace's only HTTPRoute.
 func WaitUntilRouteAnswers(t logger.T, c *Client, name, path, successCode string, retries int, sleepBetweenRetries time.Duration) Route {
 	t.Helper()
+	name, err := c.routeName(name)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
 	if _, err := WaitUntilK8SHTTPRouteAvailable(t, c, name, retries, sleepBetweenRetries); err != nil {
 		t.Fatalf("httproute %s/%s not accepted: %v", c.Namespace, name, err)
 	}
