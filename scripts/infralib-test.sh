@@ -25,7 +25,11 @@ commands:
   destroy    destroy the per-module steps of this branch (module-dir args) or,
              with --all, every step of the selected environments
   envs       list the environments of the repository (--tsv for scripts)
-  shell      open a shell in the test image of an environment: test.sh shell ENV
+  shell      open a shell in the test image of an environment (test.sh shell ENV)
+             or run one command there (test.sh shell ENV -- kubectl get nodes):
+             the image has the cloud's CLI and the kubectl credential plugin
+             of its clusters, the repository is mounted at /conf, the working
+             directory, and the environment's .env overrides are applied
   static     static checks of the given modules (all without arguments), no
              cloud needed: tflint for terraform modules, helm lint, helm
              template and kube-score for charts (scripts/static.sh)
@@ -489,13 +493,19 @@ case $COMMAND in
     if [ "$TSV" = true ]; then printf '%s\n' "${ENV_ROWS[@]}"; else run_in cli -- infralib-test envs; fi
     ;;
   shell)
-    [ ${#MODULES[@]} -eq 1 ] || die "usage: test.sh shell ENV"
+    # shell ENV opens an interactive sh; shell ENV -- CMD... runs the command
+    # instead, for scripts that need the image's cloud CLI or kubectl
+    # credential plugin (the OKE context execs oci, the AKS one kubelogin).
+    [ ${#MODULES[@]} -ge 1 ] || die "usage: test.sh shell ENV [-- command...]"
     load_environments
     cloud=$(env_cloud "${MODULES[0]}")
     pull "$(image_for "$cloud")"
     apply_overrides "${MODULES[0]}"
     base_args "$cloud"
-    exec docker run "${ARGS[@]}" -it --entrypoint sh "$(image_for "$cloud")"
+    if [ ${#MODULES[@]} -eq 1 ]; then
+      exec docker run "${ARGS[@]}" -it --entrypoint sh "$(image_for "$cloud")"
+    fi
+    exec docker run "${ARGS[@]}" --entrypoint "${MODULES[1]}" "$(image_for "$cloud")" "${MODULES[@]:2}"
     ;;
   generate)
     select_environments
