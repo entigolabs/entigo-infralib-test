@@ -100,3 +100,61 @@ steps:
 	require.Equal(t, "net", dns.Step.Name)
 	require.Equal(t, "route53", dns.Module.AgentName(e))
 }
+
+func TestEnvFileOverridesForOneEnvironment(t *testing.T) {
+	root := t.TempDir()
+	writeEnv(t, root, "aws_biz", minimal)
+	writeEnv(t, root, "aws_us", minimal)
+	require.NoError(t, os.WriteFile(filepath.Join(root, DirName, "aws_us.env"), []byte("# billing alarms live here\nAWS_REGION = us-east-1\n\nEXTRA=a=b\n"), 0o644))
+	t.Setenv("AWS_REGION", "eu-north-1")
+	config, err := Load(root)
+	require.NoError(t, err)
+	biz, us := config.Environments["aws_biz"], config.Environments["aws_us"]
+	require.Equal(t, "eu-north-1", biz.Region)
+	require.Empty(t, biz.OverridesPath)
+	require.Equal(t, "us-east-1", us.Region)
+	require.Equal(t, filepath.Join("environments", "aws_us.env"), us.OverridesPath)
+	require.Equal(t, "a=b", us.Getenv("EXTRA"), "the value is taken as written after the first =")
+	require.Equal(t, "eu-north-1", biz.Getenv("AWS_REGION"), "without an override Getenv is the process's value")
+}
+
+func TestEnvFileErrors(t *testing.T) {
+	root := t.TempDir()
+	writeEnv(t, root, "aws_biz", minimal)
+	require.NoError(t, os.WriteFile(filepath.Join(root, DirName, "aws_biz.env"), []byte("AWS_REGION\n"), 0o644))
+	_, err := Load(root)
+	require.ErrorContains(t, err, "aws_biz.env: line 1: expected KEY=VALUE")
+	require.NoError(t, os.WriteFile(filepath.Join(root, DirName, "aws_biz.env"), []byte("export AWS_REGION=x\n"), 0o644))
+	_, err = Load(root)
+	require.ErrorContains(t, err, "expected KEY=VALUE")
+}
+
+const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
+func TestCACertificatesSharedAndOwn(t *testing.T) {
+	root := t.TempDir()
+	writeEnv(t, root, "aws_biz", minimal)
+	writeEnv(t, root, "oracle_biz", minimal)
+	shared := filepath.Join(root, DirName, CertsDirName)
+	own := filepath.Join(root, DirName, "oracle_biz", CertsDirName)
+	require.NoError(t, os.MkdirAll(shared, 0o755))
+	require.NoError(t, os.MkdirAll(own, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(shared, "staging.crt"), []byte(pem), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(shared, "root.crt"), []byte(pem), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(own, "root.crt"), []byte("own "+pem), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(own, "notes.txt"), []byte("ignored"), 0o644))
+	config, err := Load(root)
+	require.NoError(t, err)
+	aws := config.Environments["aws_biz"].CACertificates
+	require.Len(t, aws, 2)
+	require.Equal(t, []string{"root.crt", "staging.crt"}, []string{aws[0].Name, aws[1].Name}, "sorted by name")
+	require.Equal(t, filepath.Join("environments", "ca-certificates", "root.crt"), aws[0].Path)
+	oracle := config.Environments["oracle_biz"].CACertificates
+	require.Len(t, oracle, 2)
+	require.Equal(t, "own "+pem, string(oracle[0].Content), "the environment's own file replaces the shared one of the same name")
+	require.Equal(t, filepath.Join("environments", "oracle_biz", "ca-certificates", "root.crt"), oracle[0].Path)
+
+	require.NoError(t, os.WriteFile(filepath.Join(shared, "bad.crt"), []byte("not pem"), 0o644))
+	_, err = Load(root)
+	require.ErrorContains(t, err, "bad.crt: not a PEM certificate")
+}

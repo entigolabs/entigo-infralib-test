@@ -267,6 +267,19 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		return nil, err
 	}
+	// The agent picks up a ca-certificates directory next to its config and
+	// hands the files to every step, where the base image trusts them.
+	if len(e.CACertificates) > 0 {
+		certs := filepath.Join(dir, env.CertsDirName)
+		if err := os.MkdirAll(certs, 0o755); err != nil {
+			return nil, err
+		}
+		for _, cert := range e.CACertificates {
+			if err := os.WriteFile(filepath.Join(certs, cert.Name), cert.Content, 0o644); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return runSteps, nil
 }
 

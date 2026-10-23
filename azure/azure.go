@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +63,7 @@ func Credential(t logger.T) azcore.TokenCredential {
 // the agent's own configuration allows.
 func ResourceGroup(t logger.T, e *env.Environment) string {
 	t.Helper()
-	if group := strings.TrimSpace(os.Getenv("AZURE_RESOURCE_GROUP")); group != "" {
+	if group := strings.TrimSpace(e.Getenv("AZURE_RESOURCE_GROUP")); group != "" {
 		return group
 	}
 	return e.Prefix + "-" + e.MustRegion(t)

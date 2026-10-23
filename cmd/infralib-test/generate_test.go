@@ -359,3 +359,27 @@ steps:
 	_, err = generate(generateOptions{Config: config, OutDir: filepath.Join(t.TempDir(), "agents"), Environments: config.All(), Self: env.AgentSource{URL: "/conf"}})
 	require.ErrorContains(t, err, "modules/aws/hello-world/test/aws_exa.yaml")
 }
+
+func TestGenerateCopiesCACertificates(t *testing.T) {
+	config := fixture(t)
+	root := config.Root()
+	pem := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "environments", "ca-certificates"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "environments", "ca-certificates", "root.crt"), []byte(pem), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "environments", "aws_exa", "ca-certificates"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "environments", "aws_exa", "ca-certificates", "aws.crt"), []byte(pem), 0o644))
+	config, err := env.Load(root)
+	require.NoError(t, err)
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err = generate(generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}})
+	require.NoError(t, err)
+	aws, err := os.ReadDir(filepath.Join(out, "aws_exa", "ca-certificates"))
+	require.NoError(t, err)
+	require.Len(t, aws, 2, "the shared certificate and aws_exa's own")
+	google, err := os.ReadDir(filepath.Join(out, "google_exa", "ca-certificates"))
+	require.NoError(t, err)
+	require.Len(t, google, 1, "only the shared certificate")
+	content, err := os.ReadFile(filepath.Join(out, "google_exa", "ca-certificates", "root.crt"))
+	require.NoError(t, err)
+	require.Equal(t, pem, string(content))
+}

@@ -42,6 +42,11 @@ Each file is an ordinary [entigo-infralib-agent](https://github.com/entigolabs/e
 
 Everything else passes through untouched, so a new agent field needs no framework change.
 
+Two optional companions let an environment differ from the executor's defaults while the yaml stays a plain agent configuration:
+
+- `environments/<env>.env`, `KEY=VALUE` lines in docker's `--env-file` format (blank lines and `#` comments skipped, values taken as written). Its variables override the executor's for that environment only: in its agent container, in its tests (`e.Getenv`, and `e.Region` and friends are read through it) and in the kubeconfig action. `AWS_REGION=us-east-1` puts one environment in another region, `OCI_KUBE_ENDPOINT=PRIVATE_ENDPOINT` changes how one agent reaches its cluster. The file is committed, so nothing secret goes in it.
+- `environments/ca-certificates/*.crt` for every environment and `environments/<env>/ca-certificates/*.crt` for one (a file of the environment's own replaces a shared one of the same name). The generator copies them to `agents/<env>/ca-certificates/`, which the agent hands to every step and the base images install into their trust store, so the agent's `argocd` CLI accepts a gateway certificate from a private CA or from Let's Encrypt staging. The route probe mounts the same files and appends them to curl's bundle, so the day its `-k` goes, it trusts what the agent trusts.
+
 ```yaml
 sources:
   - url: https://github.com/entigolabs/entigo-infralib-release
@@ -71,7 +76,7 @@ steps:
 
 A module of this repository is part of an environment when a step lists it. Its `test/<env>.yaml` holds only what that scenario changes: never restate a default, or a changed default goes unnoticed by the tests and reaches a release. An empty input file (comments only) is the normal case for a module tested with its defaults. A module the repository does not contain is external: the agent fetches it from the first of `sources:` that provides it. That is how a repository with one chart gets a whole platform to test it on.
 
-What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`; `AZURE_LOCATION`, `AZURE_SUBSCRIPTION_ID`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke`, `oracle/oke` or `azure/aks` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`, `oci ce cluster create-kubeconfig` as `context-<name>-<OCID suffix>`, `az aks get-credentials` after the cluster itself); an Oracle test also imports the `oracle` package, whose resolver covers the OCID-only context names of older oci CLIs from the cluster id output. A route check reads the HTTPRoute and its Gateway, so no gateway or DNS configuration is needed.
+What the agent reads from its environment, the framework reads from the same place: `AWS_REGION`; `GOOGLE_PROJECT`, `GOOGLE_REGION`, `GOOGLE_ZONE`; `OCI_REGION`, `OCI_COMPARTMENT_ID`; `AZURE_LOCATION`, `AZURE_SUBSCRIPTION_ID`, each overridable per environment by `environments/<env>.env`. Nothing is defaulted. The cluster to connect to is the environment's `aws/eks`, `google/gke`, `oracle/oke` or `azure/aks` module, named `<prefix>-<step>-<module>` by the agent. `k8s.Connect` finds the context the cloud CLI created for it in the executor's kubeconfig (`aws eks update-kubeconfig` names it after the cluster ARN, `gcloud container clusters get-credentials` as `gke_<project>_<location>_<name>`, `oci ce cluster create-kubeconfig` as `context-<name>-<OCID suffix>`, `az aks get-credentials` after the cluster itself); an Oracle test also imports the `oracle` package, whose resolver covers the OCID-only context names of older oci CLIs from the cluster id output. A route check reads the HTTPRoute and its Gateway, so no gateway or DNS configuration is needed.
 
 ### test/module.yaml
 
@@ -211,12 +216,12 @@ Test environments are thrown away daily and provisioned again by the stable run,
 
 ## Roadmap
 
-Done: the example repository end to end on AWS, Google Cloud and Oracle; nuke and update report shipped with the framework; static checks in the pull request workflow. Next:
+Done: the example repository end to end on AWS, Google Cloud and Oracle; nuke and update report shipped with the framework; static checks in the pull request workflow; per-environment variable overrides (`environments/<env>.env`) and extra CA certificates. Next:
 
 1. Migrate `entigo-infralib` (in progress on a branch).
 2. Azure end to end: environments (`azure_<prefix>.yaml`), the `azure` state reader (Blob Storage of the agent's storage account in `<prefix>-<location>`), the image, the credentials and kubeconfig actions and the workflows are in place; the first real run waits for an agent release with Azure support (entigo-infralib-agent #78, merged) and the entigo-infralib Azure environments.
 3. GitLab CI: the orchestrator without docker inside the test image, and OCI publishing as a script, so a repository on GitLab runners can test and release with the same images.
-4. A region per environment: a module whose resources only exist in one region (AWS billing alarms live in us-east-1) cannot be tested while the region is a single variable per cloud.
+4. Certificate verification in the route probe: the bundle with the environment's extra CAs is in place, curl still runs with `-k`; switching verification on is a one-line change once every environment's routes are known to carry valid certificates.
 ## Development
 
 ```

@@ -29,6 +29,7 @@ var (
 	HTTPRoutes               = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}
 	Deployments              = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	Services                 = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
+	ConfigMaps               = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 	Ingresses                = schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"}
 	Jobs                     = schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}
 	AWSBuckets               = schema.GroupVersionResource{Group: "s3.aws.upbound.io", Version: "v1beta2", Resource: "buckets"}

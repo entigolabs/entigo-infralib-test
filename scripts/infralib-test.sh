@@ -60,6 +60,13 @@ applied and every module with tests is tested. With them, each module gets a
 step of its own (so a branch can be tested on a shared environment) and only
 those modules are tested.
 
+An optional environments/<env>.env (KEY=VALUE lines, docker --env-file format)
+overrides variables for that environment alone, in its agent container and in
+its tests: AWS_REGION=us-east-1 puts one environment in another region. Extra
+CA certificates in environments/ca-certificates/*.crt (every environment) or
+environments/<env>/ca-certificates/*.crt (one) are handed to the agent and to
+the route probes.
+
 environment variables:
   INFRALIB_TEST_VERSION       image tag, normally pinned by test.sh
   INFRALIB_TEST_IMAGE_PREFIX  image name prefix (default entigolabs/entigo-infralib-test-)
@@ -369,13 +376,31 @@ module_source() {
 # ---------------------------------------------------------------- agent
 agent_image() { echo "${INFRALIB_AGENT_IMAGE:-$(image_for "$1")}"; }
 
+# apply_overrides ENV: export the variables of environments/ENV.env into this
+# shell, so that base_args passes them (and, for google, the agent's own names
+# derived from them) instead of the executor's. Call it in a subshell.
+apply_overrides() {
+  local file="environments/$1.env" line key value
+  [ -f "$file" ] || return 0
+  log "Applying variable overrides of $file to $1"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in ''|'#'*) continue ;; esac
+    key="${line%%=*}"; value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ "$key" != "$line" ] || die "$file: expected KEY=VALUE, got '$line'"
+    export "$key=$value"
+  done < "$file"
+}
+
 # run_agent SUBCOMMAND ENV: ei-agent run|destroy for one environment. Region,
 # project and compartment reach the agent through the same variables base_args
-# passes to every container.
-run_agent() {
+# passes to every container, with the environment's overrides applied. The
+# body is a subshell so the overrides stay with this environment.
+run_agent() (
   local sub=$1 e=$2 cloud prefix steps
   cloud=$(env_cloud "$e"); prefix=$(env_prefix "$e")
   local var="STEPS_${e//-/_}"; steps="${!var:-all}"
+  apply_overrides "$e"
   base_args "$cloud" agent
   if [ "$cloud" = google ] && [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
     ARGS+=(-e "GOOGLE_APPLICATION_CREDENTIALS_JSON=$(cat "$GOOGLE_APPLICATION_CREDENTIALS")")
@@ -400,7 +425,7 @@ run_agent() {
     docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | sed -u "s/^/[$e] /"
     return "${PIPESTATUS[0]}"
   fi
-}
+)
 
 # run_agents SUBCOMMAND: every selected environment in parallel.
 run_agents() {
@@ -453,6 +478,7 @@ case $COMMAND in
     load_environments
     cloud=$(env_cloud "${MODULES[0]}")
     pull "$(image_for "$cloud")"
+    apply_overrides "${MODULES[0]}"
     base_args "$cloud"
     exec docker run "${ARGS[@]}" -it --entrypoint sh "$(image_for "$cloud")"
     ;;

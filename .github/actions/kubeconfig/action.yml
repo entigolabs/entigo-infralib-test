@@ -53,9 +53,12 @@ runs:
         }
         az() { azure_tool az "$@"; }
         kubelogin() { azure_tool kubelogin "$@"; }
-        # awk keeps empty columns apart; bash's read would collapse the tabs
+        # Region, project and compartment are the environment's own (the
+        # executor's variables with environments/<env>.env applied), so an
+        # environment in another region gets its cluster from there. awk
+        # keeps empty columns apart; bash's read would collapse the tabs
         # around an empty zone or project and shift the cluster column.
-        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $3, $8}' | while IFS=$'\t' read -r name cloud prefix cluster; do
+        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $3, $4, $6, $7, $8}' | while IFS=$'\t' read -r name cloud prefix region project compartment cluster; do
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
@@ -67,17 +70,17 @@ runs:
           case "$cloud" in
             aws)
               [ -n "${AWS_ACCESS_KEY_ID:-}" ] || continue
-              aws eks update-kubeconfig --region "${AWS_REGION}" --name "$cluster" \
+              aws eks update-kubeconfig --region "$region" --name "$cluster" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             google)
               [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || continue
-              gcloud container clusters get-credentials "$cluster" --region "${GOOGLE_REGION}" --project "${GOOGLE_PROJECT}" \
+              gcloud container clusters get-credentials "$cluster" --region "$region" --project "$project" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             oracle)
-              [ -n "${OCI_COMPARTMENT_ID:-}" ] && [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] || continue
-              id=$(oci ce cluster list --compartment-id "${OCI_COMPARTMENT_ID}" --region "${OCI_REGION}" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
+              [ -n "$compartment" ] && [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] || continue
+              id=$(oci ce cluster list --compartment-id "$compartment" --region "$region" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
               if [ -z "$id" ] || [ "$id" = null ]; then echo "::warning::no kubeconfig for $name: cluster $cluster is not available"; continue; fi
-              oci ce cluster create-kubeconfig --cluster-id "$id" --region "${OCI_REGION}" --file "$kube" \
+              oci ce cluster create-kubeconfig --cluster-id "$id" --region "$region" --file "$kube" \
                 --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT \
                 && kubectl config rename-context "$(kubectl config current-context)" "$cluster" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
@@ -91,7 +94,7 @@ runs:
               # hands the test container.
               az login --service-principal -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}" --tenant "${AZURE_TENANT_ID}" --output none \
                 && az account set --subscription "${AZURE_SUBSCRIPTION_ID}" \
-                && az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${AZURE_LOCATION}}" --name "$cluster" --file "$kube" --overwrite-existing \
+                && az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${region}}" --name "$cluster" --file "$kube" --overwrite-existing \
                 && kubelogin convert-kubeconfig -l spn --client-id "${AZURE_CLIENT_ID}" --tenant-id "${AZURE_TENANT_ID}" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac

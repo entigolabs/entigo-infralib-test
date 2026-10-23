@@ -39,9 +39,11 @@
 //
 // Where the agent takes a value from its flags or environment, so does the
 // framework: AWS_REGION; GOOGLE_PROJECT, GOOGLE_REGION, GOOGLE_ZONE;
-// OCI_REGION, OCI_COMPARTMENT_ID. The cluster to connect to and the gateway
-// to publish through are derived from the modules of the environment, see
-// KubeContext and the k8s package.
+// OCI_REGION, OCI_COMPARTMENT_ID. An optional environments/<name>.env
+// overrides such variables for one environment, and extra CA certificates
+// can sit in environments/ca-certificates (see overrides.go). The cluster to
+// connect to and the gateway to publish through are derived from the modules
+// of the environment, see KubeContext and the k8s package.
 //
 // The executor (CI or a person) owns credentials and the kubeconfig; this
 // package only picks names out of the files.
@@ -121,6 +123,15 @@ type Environment struct {
 	Project        string
 	CompartmentID  string
 	SubscriptionID string
+
+	// Overrides are the variables of environments/<name>.env, which take
+	// precedence over the process's for this environment (see Getenv);
+	// OverridesPath is that file relative to the root, empty without one.
+	Overrides     map[string]string
+	OverridesPath string
+	// CACertificates are the extra CA certificates of environments/ca-certificates
+	// and environments/<name>/ca-certificates, for the agent and the route probe.
+	CACertificates []CACertificate
 
 	raw map[string]any
 }
@@ -214,6 +225,12 @@ func loadEnvironment(root, file string) (*Environment, error) {
 	if err := e.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", rel, err)
 	}
+	if err := e.loadOverrides(root); err != nil {
+		return nil, err
+	}
+	if err := e.loadCACertificates(root); err != nil {
+		return nil, err
+	}
 	e.loadCloudSettings()
 	return e, nil
 }
@@ -257,22 +274,23 @@ func (e *Environment) validate() error {
 }
 
 // loadCloudSettings reads the cloud's region and account-like settings from
-// the variables the agent reads as well. Missing ones are reported where they
-// are needed, so listing environments never requires credentials.
+// the variables the agent reads as well, environments/<name>.env first.
+// Missing ones are reported where they are needed, so listing environments
+// never requires credentials.
 func (e *Environment) loadCloudSettings() {
 	switch e.Cloud {
 	case CloudAWS:
-		e.Region = os.Getenv("AWS_REGION")
+		e.Region = e.Getenv("AWS_REGION")
 	case CloudGoogle:
-		e.Project = os.Getenv("GOOGLE_PROJECT")
-		e.Region = os.Getenv("GOOGLE_REGION")
-		e.Zone = os.Getenv("GOOGLE_ZONE")
+		e.Project = e.Getenv("GOOGLE_PROJECT")
+		e.Region = e.Getenv("GOOGLE_REGION")
+		e.Zone = e.Getenv("GOOGLE_ZONE")
 	case CloudOracle:
-		e.Region = os.Getenv("OCI_REGION")
-		e.CompartmentID = os.Getenv("OCI_COMPARTMENT_ID")
+		e.Region = e.Getenv("OCI_REGION")
+		e.CompartmentID = e.Getenv("OCI_COMPARTMENT_ID")
 	case CloudAzure:
-		e.Region = os.Getenv("AZURE_LOCATION")
-		e.SubscriptionID = os.Getenv("AZURE_SUBSCRIPTION_ID")
+		e.Region = e.Getenv("AZURE_LOCATION")
+		e.SubscriptionID = e.Getenv("AZURE_SUBSCRIPTION_ID")
 	}
 }
 

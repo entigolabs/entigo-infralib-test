@@ -27,11 +27,18 @@ spec:
             - |
               max_retries=300
               sleep_time=6
+              # The image's bundle plus the environment's extra CA certificates, when
+              # the test mounted some (environments/ca-certificates).
+              bundle=/etc/ssl/certs/ca-certificates.crt
+              if ls /extra-ca/*.crt >/dev/null 2>&1; then
+                cat /etc/ssl/certs/ca-certificates.crt /extra-ca/*.crt > /tmp/ca-bundle.crt
+                bundle=/tmp/ca-bundle.crt
+              fi
               for i in $(seq 1 $max_retries); do
                 # -k: the probe pins the address and checks that the route answers; the
-                # certificate is not its concern, and a gateway fronted by a private CA
-                # (Oracle) or an Istio hop with a throwaway certificate would fail it.
-                if curl -s -k -o /dev/null -w "%{http_code}" --connect-to $TARGET_DOMAIN:$TARGET_PORT:$TARGET_IP:$TARGET_PORT -H \"Host: $TARGET_DOMAIN\" $TARGET_URL | grep $SUCCESS_CODE; then
+                # certificate is not its concern yet. The bundle is in place for the day
+                # verification is switched on.
+                if curl -s -k --cacert $bundle -o /dev/null -w "%{http_code}" --connect-to $TARGET_DOMAIN:$TARGET_PORT:$TARGET_IP:$TARGET_PORT -H \"Host: $TARGET_DOMAIN\" $TARGET_URL | grep $SUCCESS_CODE; then
                   echo "Success: Response code $SUCCESS_CODE";
                   exit 0;
                 else
@@ -42,7 +49,7 @@ spec:
                   sleep $sleep_time;
                 fi
               done
-              echo "curl -k --connect-to $TARGET_DOMAIN:$TARGET_PORT:$TARGET_IP:$TARGET_PORT -H \"Host: $TARGET_DOMAIN\" $TARGET_URL"
+              echo "curl -k --cacert $bundle --connect-to $TARGET_DOMAIN:$TARGET_PORT:$TARGET_IP:$TARGET_PORT -H \"Host: $TARGET_DOMAIN\" $TARGET_URL"
               echo "Failed after $max_retries attempts";
               exit 1;
       restartPolicy: Never
