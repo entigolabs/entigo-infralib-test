@@ -149,16 +149,19 @@ nuke_azure() {
   # in the committed file are filled in from the environment here, so the
   # file holds no identifiers.
   if grep -q '\${AZURE_LOCATION}' "$CONFIG"; then : "${AZURE_LOCATION:?referenced by $CONFIG}"; fi
-  local rendered
+  local rendered rc=0
   rendered=$(mktemp)
   sed -e "s/\\\${AZURE_TENANT_ID}/${AZURE_TENANT_ID}/g" -e "s/\\\${AZURE_SUBSCRIPTION_ID}/${AZURE_SUBSCRIPTION_ID}/g" \
       -e "s/\\\${AZURE_LOCATION}/${AZURE_LOCATION:-}/g" "$CONFIG" > "$rendered"
+  # mktemp makes it 0600 and the image runs as its own user.
+  chmod 644 "$rendered"
   local args=(run --config /home/azure-nuke/config.yml --tenant-id "$AZURE_TENANT_ID" --subscription-id "$AZURE_SUBSCRIPTION_ID"
     --no-prompt --prompt-delay 3 --quiet)
   [ "$DRY_RUN" = false ] && args+=(--no-dry-run)
   docker run --rm -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET \
-    -v "$rendered":/home/azure-nuke/config.yml:ro "$AZURE_NUKE_IMAGE" "${args[@]}"
+    -v "$rendered":/home/azure-nuke/config.yml:ro "$AZURE_NUKE_IMAGE" "${args[@]}" || rc=$?
   rm -f "$rendered"
+  return $rc
 }
 
 attempt=1
