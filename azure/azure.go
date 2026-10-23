@@ -30,6 +30,12 @@ import (
 // outputs in, inside its storage account.
 const StateContainer = "tfstate"
 
+// The agent tags what it creates (model.ResourceTagKey/Value in entigo-infralib-agent).
+const (
+	agentTagKey   = "created-by"
+	agentTagValue = "entigo-infralib-agent"
+)
+
 func init() {
 	tf.Register(env.CloudAzure, func(t logger.T, e *env.Environment, file string) map[string]any {
 		t.Helper()
@@ -82,8 +88,11 @@ var (
 
 // StorageAccountE finds the agent's state storage account in the resource
 // group: the agent names it <prefix><region code><unique suffix>, lowercase
-// without hyphens, so it is the one account whose name starts with the
-// prefix. Found accounts are remembered for the process.
+// without hyphens, and tags it created-by=entigo-infralib-agent. Modules
+// create accounts in the same group under the same prefix (loki's, the vpc
+// flow logs'), so the tag decides and the name only narrows; an untagged
+// match is accepted when it is the only one, for agents before the tag.
+// Found accounts are remembered for the process.
 func StorageAccountE(subscription, resourceGroup, prefix string) (Account, error) {
 	key := subscription + "/" + resourceGroup + "/" + prefix
 	accountsMu.Lock()
@@ -101,7 +110,7 @@ func StorageAccountE(subscription, resourceGroup, prefix string) (Account, error
 		return Account{}, fmt.Errorf("storage accounts client: %w", err)
 	}
 	want := strings.ReplaceAll(strings.ToLower(prefix), "-", "")
-	var found []Account
+	var found, tagged []Account
 	pager := client.NewListByResourceGroupPager(resourceGroup, nil)
 	for pager.More() {
 		page, err := pager.NextPage(context.Background())
@@ -117,7 +126,13 @@ func StorageAccountE(subscription, resourceGroup, prefix string) (Account, error
 				account.BlobEndpoint = *a.Properties.PrimaryEndpoints.Blob
 			}
 			found = append(found, account)
+			if v, ok := a.Tags[agentTagKey]; ok && v != nil && *v == agentTagValue {
+				tagged = append(tagged, account)
+			}
 		}
+	}
+	if len(tagged) > 0 {
+		found = tagged
 	}
 	switch len(found) {
 	case 1:
@@ -132,7 +147,7 @@ func StorageAccountE(subscription, resourceGroup, prefix string) (Account, error
 		for i, a := range found {
 			names[i] = a.Name
 		}
-		return Account{}, fmt.Errorf("several storage accounts named %s* in resource group %s: %s", want, resourceGroup, strings.Join(names, ", "))
+		return Account{}, fmt.Errorf("several storage accounts named %s* in resource group %s and none tagged %s=%s: %s", want, resourceGroup, agentTagKey, agentTagValue, strings.Join(names, ", "))
 	}
 }
 
