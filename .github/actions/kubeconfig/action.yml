@@ -55,14 +55,24 @@ runs:
         kubelogin() { azure_tool kubelogin "$@"; }
         # Region, project and compartment are the environment's own (the
         # executor's variables with environments/<env>.env applied), so an
-        # environment in another region gets its cluster from there. awk
-        # keeps empty columns apart; bash's read would collapse the tabs
-        # around an empty zone or project and shift the cluster column.
-        ./test.sh envs --tsv | awk -F'\t' -v OFS='\t' '{print $1, $2, $3, $4, $6, $7, $8}' | while IFS=$'\t' read -r name cloud prefix region project compartment cluster; do
+        # environment in another region gets its cluster from there; an
+        # empty column falls back to the executor's variable. awk rewrites
+        # the separator to one bash's read does not treat as whitespace, so
+        # an empty column (zone, project, a region an older cli image did
+        # not report) does not shift the cluster column.
+        ./test.sh envs --tsv | awk -F'\t' -v OFS='|' '{print $1, $2, $3, $4, $6, $7, $8}' | while IFS='|' read -r name cloud prefix region project compartment cluster; do
           if [ -n "${ENVIRONMENTS}" ]; then
             case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
           fi
           [ -n "$cluster" ] || continue
+          case "$cloud" in
+            aws) region="${region:-${AWS_REGION:-}}" ;;
+            google) region="${region:-${GOOGLE_REGION:-}}"; project="${project:-${GOOGLE_PROJECT:-}}" ;;
+            oracle) region="${region:-${OCI_REGION:-}}"; compartment="${compartment:-${OCI_COMPARTMENT_ID:-}}" ;;
+            azure) region="${region:-${AZURE_LOCATION:-}}" ;;
+          esac
+          echo "kubeconfig for $name: cluster $cluster in $region"
+          # The cloud CLI prints the context it added.
           # A cluster that does not exist (yet) is a warning, not a failure:
           # terraform module tests need no cluster, and a k8s test that does
           # fails on its own with the command that would have created the

@@ -201,6 +201,14 @@ base_args() {
     ARGS+=(-v "$kubeconfig:/creds/kubeconfig:ro" -e KUBECONFIG=/creds/kubeconfig)
   fi
   case $cloud in
+    cli)
+      # No credentials, but the region and account settings of every cloud:
+      # infralib-test envs reports them per environment (with the
+      # environments/<env>.env overrides applied) for the kubeconfig step.
+      for v in AWS_REGION GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE OCI_REGION OCI_COMPARTMENT_ID AZURE_LOCATION AZURE_SUBSCRIPTION_ID; do
+        [ -n "${!v:-}" ] && ARGS+=(-e "$v")
+      done
+      ;;
     aws)
       for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
         [ -n "${!v:-}" ] && ARGS+=(-e "$v")
