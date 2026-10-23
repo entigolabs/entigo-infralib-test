@@ -206,12 +206,12 @@ base_args() {
       # infralib-test envs reports them per environment (with the
       # environments/<env>.env overrides applied) for the kubeconfig step.
       for v in AWS_REGION GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE OCI_REGION OCI_COMPARTMENT_ID AZURE_LOCATION AZURE_SUBSCRIPTION_ID; do
-        [ -n "${!v:-}" ] && ARGS+=(-e "$v")
+        if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
       done
       ;;
     aws)
       for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
-        [ -n "${!v:-}" ] && ARGS+=(-e "$v")
+        if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
       done
       if [ -d "$HOME/.aws" ]; then
         ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials -e AWS_CONFIG_FILE=/creds/aws/config)
@@ -219,17 +219,17 @@ base_args() {
       ;;
     google)
       # GOOGLE_* for the tests, the agent's own names alongside.
-      for v in GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
+      for v in GOOGLE_PROJECT GOOGLE_REGION GOOGLE_ZONE; do if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi; done
       ARGS+=(-e "PROJECT_ID=${GOOGLE_PROJECT:-}" -e "LOCATION=${GOOGLE_REGION:-}" -e "ZONE=${GOOGLE_ZONE:-}")
       local gcloud="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
       # gcloud writes logs and token caches into its config dir, so this one is writable.
-      [ -d "$gcloud" ] && ARGS+=(-v "$gcloud:/creds/gcloud" -e CLOUDSDK_CONFIG=/creds/gcloud)
+      if [ -d "$gcloud" ]; then ARGS+=(-v "$gcloud:/creds/gcloud" -e CLOUDSDK_CONFIG=/creds/gcloud); fi
       if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
         ARGS+=(-v "$GOOGLE_APPLICATION_CREDENTIALS:/creds/google.json:ro" -e GOOGLE_APPLICATION_CREDENTIALS=/creds/google.json)
       fi
       ;;
     oracle)
-      for v in OCI_REGION OCI_COMPARTMENT_ID OCI_PROFILE; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
+      for v in OCI_REGION OCI_COMPARTMENT_ID OCI_PROFILE; do if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi; done
       # The agent's pipeline scripts write their OKE kubeconfig for the private
       # endpoint unless told otherwise; a run from outside the VCN (a runner, a
       # workstation) needs the public one, like the kubeconfig the tests use.
@@ -244,12 +244,15 @@ base_args() {
       # which an AKS kubeconfig execs, knows the service principal by its
       # own names.
       for v in AZURE_SUBSCRIPTION_ID AZURE_LOCATION AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_RESOURCE_GROUP; do
-        [ -n "${!v:-}" ] && ARGS+=(-e "$v")
+        if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
       done
       [ -z "${AZURE_CLIENT_SECRET:-}" ] || ARGS+=(-e "AAD_SERVICE_PRINCIPAL_CLIENT_ID=${AZURE_CLIENT_ID:-}" -e "AAD_SERVICE_PRINCIPAL_CLIENT_SECRET=${AZURE_CLIENT_SECRET}")
       local azure="${AZURE_CONFIG_DIR:-$HOME/.azure}"
       # az writes token caches into its config dir, so this one is writable.
-      [ -d "$azure" ] && ARGS+=(-v "$azure:/creds/azure" -e AZURE_CONFIG_DIR=/creds/azure)
+      # An if, not a && list: as the last command of the function a false
+      # test would be its exit status, and set -e would end the caller (a
+      # runner without an az login has no such directory).
+      if [ -d "$azure" ]; then ARGS+=(-v "$azure:/creds/azure" -e AZURE_CONFIG_DIR=/creds/azure); fi
       ;;
   esac
 }
@@ -449,8 +452,12 @@ run_agents() {
   done
   if [ ${#failed[@]} -gt 0 ]; then
     for e in "${failed[@]}"; do
-      warn "Agent $sub for $e failed, last lines of logs/$e/agent-$sub.log:"
-      tail -n 40 "logs/$e/agent-$sub.log" >&2 || true
+      if [ -f "logs/$e/agent-$sub.log" ]; then
+        warn "Agent $sub for $e failed, last lines of logs/$e/agent-$sub.log:"
+        tail -n 40 "logs/$e/agent-$sub.log" >&2 || true
+      else
+        warn "Agent $sub for $e failed before the agent container started (no logs/$e/agent-$sub.log); see the messages above"
+      fi
     done
     die "agent $sub failed for ${failed[*]}"
   fi
