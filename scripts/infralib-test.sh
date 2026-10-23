@@ -47,7 +47,7 @@ options:
       --destroy         after the tests, destroy the per-module steps created
                         by this run (or INFRALIB_DESTROY=true); off by default,
                         shared test environments are usually nuked on a schedule
-      --timeout D       go test timeout per module (default 30m)
+      --timeout D       go test timeout per module (default 45m)
       --run REGEX       only run tests matching REGEX
       --tag TAG         image tag (default: INFRALIB_TEST_VERSION, else latest)
       --no-pull         do not pull the images before running
@@ -109,7 +109,7 @@ STEP_PREFIX=""
 ONLY_STEPS=""
 DESTROY="${INFRALIB_DESTROY:-false}"
 DESTROY_ALL=false
-TIMEOUT=30m
+TIMEOUT=45m
 RUN_FILTER=""
 TAG="${INFRALIB_TEST_VERSION:-latest}"
 TSV=false

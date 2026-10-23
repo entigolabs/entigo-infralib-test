@@ -48,7 +48,7 @@ func runCommand(args []string) error {
 	root := fs.String("root", "", "repository root (default: INFRALIB_ROOT or the parent holding environments/)")
 	var envNames stringList
 	fs.Var(&envNames, "env", "environment to test against (repeatable, default: every environment whose steps list a module)")
-	timeout := fs.Duration("timeout", 30*time.Minute, "go test timeout per package")
+	timeout := fs.Duration("timeout", 45*time.Minute, "go test timeout per package")
 	logDir := fs.String("log-dir", "", "directory for full per-module logs (default <root>/logs)")
 	parallel := fs.Int("parallel", 4, "packages compiled and run in parallel (go test -p)")
 	runFilter := fs.String("run", "", "regular expression passed to go test -run")
