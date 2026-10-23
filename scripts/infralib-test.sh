@@ -345,7 +345,7 @@ generate() {
   while read -r line; do
     set -- $line
     case "$2" in
-      skip) warn "Skipping $1: none of the modules has an input for it" ;;
+      skip) warn "Skipping $1: its steps list none of the requested modules" ;;
       *) steps=$2; [ "$steps" = all ] && [ -n "$ONLY_STEPS" ] && steps=$ONLY_STEPS
          declare -g "STEPS_${1//-/_}=$steps"; SELECTED+=("$1"); echo "    $1: steps $steps" >&2 ;;
     esac
