@@ -69,6 +69,16 @@ RUN cd /opt/infralib-test/src \
 COPY images/prune-go-caches.sh /opt/infralib-test/prune-go-caches.sh
 RUN cd /opt/infralib-test/src && /opt/infralib-test/prune-go-caches.sh ./env/... ./logger/... ./random/... ./retry/... ./tf/... ./k8s/... ./azure/... \
     && chmod -R a+rwX /go
+# The orchestrator runs this image as the executor's uid, which no passwd
+# entry knows, so the real sudo refuses to run. The agent's scripts use sudo
+# for one thing, update-ca-certificates after copying an environment's extra
+# CA certificates (environments/ca-certificates) into the store; on Azure
+# Linux that is update-ca-trust over /etc/pki/ca-trust. The store is made
+# writable here and sudo is shimmed to run its command as is, so the
+# certificates get installed whoever runs the container.
+RUN chmod -R a+rwX /usr/local/share/ca-certificates /etc/pki/ca-trust \
+    && printf '#!/bin/sh\n# Shim: the test image runs as any uid, see the Dockerfile.\n[ "$1" = -n ] && shift\nexec "$@"\n' > /usr/local/bin/sudo \
+    && chmod 755 /usr/local/bin/sudo
 COPY scripts/ /opt/infralib-test/scripts/
 COPY templates/ /opt/infralib-test/templates/
 USER 1000
