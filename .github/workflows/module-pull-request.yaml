@@ -6,10 +6,12 @@
 #
 # A module with pin_step in its test/module.yaml cannot have a branch
 # installation (a second external-dns would hide whether the branch's one
-# works), so it is applied inside its regular step and name. Pull requests
-# that touch such a module wait for every other run of this workflow, on any
-# branch, before they start; the others only wait for runs of their own branch,
-# since their per-branch steps cannot collide.
+# works), so it is applied inside its regular step and name. A module's job
+# waits only for the older runs it can collide with: runs of its own branch,
+# and for a pinned k8s module the runs testing that same module on any
+# branch, since its step is its own. A pinned terraform module runs inside
+# its regular step with the step's other modules, so it waits for every
+# older run. Pull requests of different modules run alongside each other.
 #
 # Alongside, a static job per changed module runs scripts/static.sh (tflint;
 # helm lint, helm template and kube-score) without credentials, so a lint
@@ -55,7 +57,6 @@ jobs:
     outputs:
       modules: ${{ steps.set.outputs.modules }}
       any: ${{ steps.set.outputs.any }}
-      pinned: ${{ steps.set.outputs.pinned }}
     steps:
     - uses: actions/checkout@v7
       with:
@@ -94,15 +95,11 @@ jobs:
           # secret has lines that are just { or }. The job rebuilds the JSON.
           echo "any=true" >> "$GITHUB_OUTPUT"; echo "modules=$(echo "${modules}" | jq -r 'map(@json) | join(",")')" >> "$GITHUB_OUTPUT"
         fi
-        # A pinned module is applied to the shared installation, so the run
-        # must not overlap with any other run of this workflow.
-        pinned=false
         for m in $(echo "${modules:-[]}" | jq -r '.[]'); do
           if [ -f "$m/test/module.yaml" ] && grep -qE '^pin_step:[[:space:]]*true[[:space:]]*$' "$m/test/module.yaml"; then
-            echo "$m is pinned to its regular step"; pinned=true
+            echo "$m is pinned to its regular step"
           fi
         done
-        echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
 
   static:
     name: static ${{ matrix.module }}
@@ -152,16 +149,67 @@ jobs:
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
     - uses: actions/checkout@v7
-    - name: Wait for other runs on the shared environments
-      # Per-branch steps cannot collide, so a run only queues behind its own
-      # branch, unless it applies a pinned module to the shared installation:
-      # then it queues behind every run of this workflow.
-      uses: softprops/turnstyle@v3
-      with:
-        same-branch-only: ${{ needs.detect.outputs.pinned != 'true' }}
-        abort-after-seconds: 3600
+    - name: Wait for older runs this one can collide with
+      # Runs of the same branch share their per-branch steps, so they go one
+      # after the other. A pinned k8s module is applied to the shared
+      # installation in a step of its own, so its job also waits for older
+      # runs that test the same module on any branch, and for nothing else:
+      # a pull request of another module runs alongside. A pinned terraform
+      # module is applied inside its regular step with the step's other
+      # modules, so it waits for every older run. An older run whose
+      # modules are not known yet (its detect job still running) is waited
+      # for until they are. Gives up after an hour, like the whole-environment
+      # waits of the other workflows.
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        MODULE: ${{ matrix.module }}
+      run: |
+        set -euo pipefail
+        branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+        scope=branch
+        if [ -f "${MODULE}/test/module.yaml" ] && grep -qE '^pin_step:[[:space:]]*true[[:space:]]*$' "${MODULE}/test/module.yaml"; then
+          case "${MODULE}" in modules/k8s/*) scope=module ;; *) scope=all ;; esac
+        fi
+        case "$scope" in
+          branch) echo "Waiting for older runs of this workflow on branch ${branch}" ;;
+          module) echo "Waiting for older runs of this workflow on branch ${branch} and for older runs testing ${MODULE} on any branch (pinned k8s module)" ;;
+          all) echo "Waiting for every older run of this workflow (pinned terraform module, applied inside its regular step)" ;;
+        esac
+        # older RUN_ID BRANCH lines: the still active runs of this workflow
+        # that started before this one.
+        older() {
+          local status
+          for status in in_progress queued waiting; do
+            gh api --paginate -X GET "repos/${GITHUB_REPOSITORY}/actions/runs" -f status="$status" -f per_page=100 \
+              --jq '.workflow_runs[] | select(.name == $ENV.GITHUB_WORKFLOW and .id < ($ENV.GITHUB_RUN_ID | tonumber)) | "\(.id) \(.head_branch)"'
+          done
+        }
+        # blocks RUN_ID BRANCH: whether that run can collide with this job.
+        blocks() {
+          [ "$2" = "$branch" ] && return 0
+          [ "$scope" = all ] && return 0
+          [ "$scope" = module ] || return 1
+          local jobs
+          jobs=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/$1/jobs?per_page=100" --jq '.jobs[] | "\(.status) \(.name)"')
+          echo "$jobs" | grep -qE '^completed .*Detect changed modules$' || return 0
+          echo "$jobs" | grep -v '^completed ' | grep -qE " / ${MODULE}\$"
+        }
+        deadline=$((SECONDS + 3600))
+        while :; do
+          blocking=()
+          while read -r id b; do
+            [ -n "$id" ] || continue
+            if blocks "$id" "$b"; then blocking+=("$id (${b})"); fi
+          done < <(older)
+          [ ${#blocking[@]} -gt 0 ] || break
+          if [ $SECONDS -ge $deadline ]; then
+            echo "::error::still waiting for run(s) ${blocking[*]} after an hour" >&2
+            exit 1
+          fi
+          echo "Waiting for ${blocking[*]}"
+          sleep 60
+        done
+        echo "No older run in the way"
     - name: Environment selection
       id: envs
       env:
