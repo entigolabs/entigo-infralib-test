@@ -15,9 +15,12 @@
 #       uses: entigolabs/entigo-infralib-test/.github/workflows/module-main.yaml@main
 #       secrets: inherit
 #
+# One job per environment the changed modules are part of: a module only
+# some environments install is applied and tested there and nowhere else.
 # When the push changed no module (an environment file, say) every step is
-# applied from main and every module's tests run, since such a change can
-# affect any of them. Credentials as in module-pull-request.yaml. With a
+# applied from main and every module's tests run on every environment, since
+# such a change can affect any of them. Credentials as in
+# module-pull-request.yaml. With a
 # SLACK_WEBHOOK_URL secret (plus SLACK_USERNAME, SLACK_ICON_EMOJI) a failed
 # environment is posted to Slack; without it nothing is posted.
 name: Module main
@@ -53,29 +56,6 @@ jobs:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
-    - name: Select environments
-      id: envs
-      env:
-        ENVIRONMENTS: ${{ inputs.environments }}
-      run: |
-        set -euo pipefail
-        selected=$(./test.sh envs --tsv | while IFS=$'\t' read -r name cloud rest; do
-          if [ -n "${ENVIRONMENTS}" ]; then
-            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
-          fi
-          case "$cloud" in
-            aws) [ "${HAS_AWS}" = true ] && echo "$name" ;;
-            google) [ "${HAS_GOOGLE}" = true ] && echo "$name" ;;
-            oracle) [ "${HAS_ORACLE}" = true ] && echo "$name" ;;
-            azure) [ "${HAS_AZURE}" = true ] && echo "$name" ;;
-          esac
-        done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
-        echo "Environments: ${selected}"
-        [ -n "${selected}" ] || { echo "::error::no environment has credentials" >&2; exit 1; }
-        # No braces or brackets in the output: GitHub drops a job output that
-        # contains any line of a multi-line secret, and a JSON credentials
-        # secret has lines that are just { or }. The job rebuilds the JSON.
-        echo "environments=${selected}" >> "$GITHUB_OUTPUT"
     - name: Changed files
       id: changed
       if: inputs.modules == '' && github.event_name == 'push'
@@ -98,10 +78,44 @@ jobs:
         fi
         echo "Modules to test: ${modules:-all}"
         echo "modules=${modules}" >> "$GITHUB_OUTPUT"
+    - name: Select environments
+      id: envs
+      env:
+        ENVIRONMENTS: ${{ inputs.environments }}
+        MODULES: ${{ steps.modules.outputs.modules }}
+      run: |
+        set -euo pipefail
+        # The environments the modules are part of (test.sh envs MODULES...),
+        # all of them when no module is restricted; then the ones asked for,
+        # whose cloud has credentials.
+        selected=$(./test.sh envs --tsv ${MODULES} | while IFS=$'\t' read -r name cloud rest; do
+          if [ -n "${ENVIRONMENTS}" ]; then
+            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
+          fi
+          case "$cloud" in
+            aws) [ "${HAS_AWS}" = true ] && echo "$name" ;;
+            google) [ "${HAS_GOOGLE}" = true ] && echo "$name" ;;
+            oracle) [ "${HAS_ORACLE}" = true ] && echo "$name" ;;
+            azure) [ "${HAS_AZURE}" = true ] && echo "$name" ;;
+          esac
+        done | jq -r -R -s 'split("\n") | map(select(length > 0)) | map(@json) | join(",")')
+        echo "Environments: ${selected:-none}"
+        if [ -z "${selected}" ]; then
+          if [ -n "${MODULES}" ]; then
+            echo "::notice::no environment with credentials lists ${MODULES}; nothing to apply"
+          else
+            echo "::error::no environment has credentials" >&2; exit 1
+          fi
+        fi
+        # No braces or brackets in the output: GitHub drops a job output that
+        # contains any line of a multi-line secret, and a JSON credentials
+        # secret has lines that are just { or }. The job rebuilds the JSON.
+        echo "environments=${selected}" >> "$GITHUB_OUTPUT"
 
   environment:
     name: ${{ matrix.environment }}
     needs: plan
+    if: needs.plan.outputs.environments != ''
     runs-on: ${{ inputs.runs-on }}
     strategy:
       matrix:

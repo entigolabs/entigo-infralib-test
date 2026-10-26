@@ -24,7 +24,8 @@ commands:
   generate   only write the agent configurations under agents/
   destroy    destroy the per-module steps of this branch (module-dir args) or,
              with --all, every step of the selected environments
-  envs       list the environments of the repository (--tsv for scripts)
+  envs       list the environments of the repository (--tsv for scripts); with
+             module directories only those whose steps list one of the modules
   shell      open a shell in the test image of an environment (test.sh shell ENV)
              or run one command there (test.sh shell ENV -- kubectl get nodes):
              the image has the cloud's CLI and the kubectl credential plugin
@@ -489,8 +490,13 @@ case $COMMAND in
     exec "$(dirname "${BASH_SOURCE[0]}")/static.sh" --root "$ROOT" "${MODULES[@]}"
     ;;
   envs)
-    load_environments
-    if [ "$TSV" = true ]; then printf '%s\n' "${ENV_ROWS[@]}"; else run_in cli -- infralib-test envs; fi
+    # With module directories only the environments whose steps list one of
+    # them: the ones a change to the modules can affect.
+    args=()
+    for m in "${MODULES[@]}"; do args+=(-module "$(module_source "$m")"); done
+    [ "$TSV" = true ] && args+=(-tsv)
+    pull "$(image_for cli)"
+    run_in cli -- infralib-test envs "${args[@]}"
     ;;
   shell)
     # shell ENV opens an interactive sh; shell ENV -- CMD... runs the command

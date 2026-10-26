@@ -42,6 +42,8 @@ func envsCommand(args []string) error {
 	cloud := fs.String("cloud", "", "only environments of this cloud")
 	names := fs.Bool("names", false, "print names only, one per line")
 	tsv := fs.Bool("tsv", false, "print one tab separated line per environment: name, cloud, prefix, region, zone, project, compartment_id, cluster")
+	var modules stringList
+	fs.Var(&modules, "module", "only environments whose steps list this module source (repeatable; any of them)")
 	if err := fs.Parse(args); err != nil {
 		return exitError{code: 2}
 	}
@@ -49,28 +51,36 @@ func envsCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *tsv {
-		for _, e := range config.All() {
-			if *cloud == "" || e.Cloud == *cloud {
-				fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Cloud, e.Prefix, e.Region, e.Zone, e.Project, e.CompartmentID, config.ClusterName(e))
+	environments := config.All()
+	if *cloud != "" {
+		var ofCloud []*env.Environment
+		for _, e := range environments {
+			if e.Cloud == *cloud {
+				ofCloud = append(ofCloud, e)
 			}
+		}
+		environments = ofCloud
+	}
+	if len(modules) > 0 {
+		if environments, err = environmentsWith(config, environments, modules); err != nil {
+			return err
+		}
+	}
+	if *tsv {
+		for _, e := range environments {
+			fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Cloud, e.Prefix, e.Region, e.Zone, e.Project, e.CompartmentID, config.ClusterName(e))
 		}
 		return nil
 	}
 	if *names {
-		for _, e := range config.All() {
-			if *cloud == "" || e.Cloud == *cloud {
-				fmt.Println(e.Name)
-			}
+		for _, e := range environments {
+			fmt.Println(e.Name)
 		}
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tCLOUD\tPREFIX\tREGION\tCLUSTER\tSTEPS (modules: local/external)")
-	for _, e := range config.All() {
-		if *cloud != "" && e.Cloud != *cloud {
-			continue
-		}
+	for _, e := range environments {
 		var steps []string
 		for _, s := range e.Steps {
 			local, external := 0, 0
@@ -90,4 +100,36 @@ func envsCommand(args []string) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Cloud, e.Prefix, e.Region, config.ClusterName(e), strings.Join(steps, " "))
 	}
 	return w.Flush()
+}
+
+// environmentsWith keeps the environments whose steps list at least one of
+// the module sources: the ones a change to these modules can affect, so the
+// post-merge workflow runs a job only for them. A module of this repository
+// or an external one; a source nothing lists leaves an empty list.
+func environmentsWith(config *env.Config, environments []*env.Environment, sources []string) ([]*env.Environment, error) {
+	var modules []env.Module
+	for _, source := range sources {
+		m, err := config.ModuleBySource(source)
+		if err != nil {
+			return nil, err
+		}
+		modules = append(modules, m)
+	}
+	var result []*env.Environment
+	for _, e := range environments {
+		if anyMember(config, e, modules) {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
+// anyMember reports whether any of the modules is placed in the environment.
+func anyMember(config *env.Config, e *env.Environment, modules []env.Module) bool {
+	for _, m := range modules {
+		if _, ok := config.Find(e, m.Source); ok {
+			return true
+		}
+	}
+	return false
 }

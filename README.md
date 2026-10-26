@@ -157,7 +157,7 @@ modules/k8s/hello-world/test.sh        the same, from the module's directory (te
 ./test.sh --env aws_biz test           only the tests, environments already provisioned
 ./test.sh --destroy modules/aws/foo    tear the per-module step down afterwards
 ./test.sh static modules/k8s/hello-world  static checks only, no cloud: tflint, or helm lint + helm template + kube-score
-./test.sh envs | generate | agent | shell ENV [-- command]
+./test.sh envs [modules...] | generate | agent | shell ENV [-- command]
 ./test.sh --help
 ```
 

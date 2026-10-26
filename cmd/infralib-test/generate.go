@@ -114,7 +114,7 @@ func generateCommand(args []string) error {
 func generate(opts generateOptions) (*generateResult, error) {
 	result := &generateResult{Steps: map[string][]string{}}
 	for _, e := range opts.Environments {
-		if len(opts.Modules) > 0 && !anyModuleIsMember(opts, e) {
+		if len(opts.Modules) > 0 && !anyMember(opts.Config, e, opts.Modules) {
 			result.Skipped = append(result.Skipped, e.Name)
 			continue
 		}
@@ -125,15 +125,6 @@ func generate(opts generateOptions) (*generateResult, error) {
 		result.Steps[e.Name] = steps
 	}
 	return result, nil
-}
-
-func anyModuleIsMember(opts generateOptions, e *env.Environment) bool {
-	for _, m := range opts.Modules {
-		if _, ok := opts.Config.Find(e, m.Source); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // generateEnvironment patches a copy of the environment's agent config and
