@@ -29,7 +29,8 @@
 # (secrets: inherit): AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION;
 # GOOGLE_CREDENTIALS, GOOGLE_PROJECT, GOOGLE_REGION, GOOGLE_ZONE; OCI_CONFIG,
 # OCI_PRIVATE_KEY, OCI_REGION, OCI_COMPARTMENT_ID. The clouds whose secrets
-# are set are the ones whose environments run.
+# are set are the ones whose environments run, and a module's job prepares
+# only the clouds of the environments that install the module.
 name: Module pull request
 
 on:
@@ -161,23 +162,43 @@ jobs:
         abort-after-seconds: 3600
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
-      with:
-        google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
-        oci_config: ${{ secrets.OCI_CONFIG }}
-        oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
     - name: Environment selection
       id: envs
       env:
         ENVIRONMENTS: ${{ inputs.environments }}
+        MODULE: ${{ matrix.module }}
       run: |
+        set -euo pipefail
+        # The environments whose steps list the module (every environment
+        # with a cli older than v0.8.6, which ignores the module argument),
+        # narrowed to the ones asked for. Only their clouds get credentials
+        # and only their clusters a kubeconfig: a module one cloud installs
+        # costs one cloud's logins and image pulls. The orchestrator selects
+        # for itself in the test step, where an environment whose cloud has
+        # no credentials is skipped with a warning rather than failing.
+        selected=$(./test.sh envs --tsv "${MODULE}" | cut -f1 | while read -r name; do
+          if [ -n "${ENVIRONMENTS}" ]; then
+            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
+          fi
+          echo "$name"
+        done | paste -sd,)
+        echo "Environments of ${MODULE}: ${selected:-none}"
+        echo "environments=${selected}" >> "$GITHUB_OUTPUT"
         args=""
         IFS=, read -r -a envs <<<"${ENVIRONMENTS}"
         for e in "${envs[@]}"; do [ -n "$e" ] && args="$args --env $e"; done
         echo "args=${args}" >> "$GITHUB_OUTPUT"
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+      if: steps.envs.outputs.environments != ''
       with:
-        environments: ${{ inputs.environments }}
+        google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
+        oci_config: ${{ secrets.OCI_CONFIG }}
+        oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+        environments: ${{ steps.envs.outputs.environments }}
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+      if: steps.envs.outputs.environments != ''
+      with:
+        environments: ${{ steps.envs.outputs.environments }}
     - name: Test ${{ matrix.module }}
       run: ./test.sh ${{ steps.envs.outputs.args }} ${{ matrix.module }}
     - name: go.mod matches the framework version of test.sh

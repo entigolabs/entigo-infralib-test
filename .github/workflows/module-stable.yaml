@@ -145,6 +145,7 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+        environments: ${{ matrix.environment }}
     - name: Provision ${{ matrix.environment }} from release ${{ needs.plan.outputs.release }}
       # The version is pinned to the release under test rather than left to the
       # agent's "latest": deterministic, and it sidesteps the agent checking a

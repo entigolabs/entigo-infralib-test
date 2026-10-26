@@ -179,6 +179,7 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+        environments: ${{ matrix.environment }}
     - name: Apply main to ${{ matrix.environment }}
       run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ github.server_url }}/${{ github.repository }} --version main
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main

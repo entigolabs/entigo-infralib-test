@@ -149,6 +149,7 @@ jobs:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+        environments: ${{ matrix.environment }}
     - name: Apply main to ${{ matrix.environment }}
       # The changed modules are applied under their regular names; nothing
       # else is touched. Without changed modules every step runs, so that
