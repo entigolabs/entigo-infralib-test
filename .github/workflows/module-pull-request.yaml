@@ -13,9 +13,10 @@
 # its regular step with the step's other modules, so it waits for every
 # older run. Pull requests of different modules run alongside each other.
 #
-# Alongside, a static job per changed module runs scripts/static.sh (tflint;
-# helm lint, helm template and kube-score) without credentials, so a lint
-# finding is known before the environments are touched.
+# First, a static job per changed module runs scripts/static.sh (tflint;
+# helm lint, helm template and kube-score) without credentials; the tests
+# wait for all of them, so a lint finding is known before the environments
+# are touched and nothing is applied for a pull request that fails lint.
 #
 # In the module repository:
 #
@@ -125,7 +126,9 @@ jobs:
 
   test:
     name: ${{ matrix.module }}
-    needs: detect
+    # After every static check: a module that fails lint is not applied,
+    # and neither is another module of the same pull request.
+    needs: [detect, static]
     if: needs.detect.outputs.any == 'true'
     runs-on: ${{ inputs.runs-on }}
     strategy:
