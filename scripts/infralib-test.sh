@@ -443,17 +443,33 @@ run_agent() (
   fi
 )
 
-# run_agents SUBCOMMAND: every selected environment in parallel.
+# run_agents SUBCOMMAND: every selected environment in parallel. Each is
+# reported the moment it finishes, in whatever order that happens: each
+# background run leaves its exit status in logs/<env>/agent-<sub>.rc, and
+# the loop below watches those files rather than waiting on the processes
+# one by one, which would hold a finished environment's line until every
+# environment started before it was done too.
 run_agents() {
   local sub=$1 e pids=() names=() failed=()
   for e in "${ENVS[@]}"; do
     pull "$(agent_image "$(env_cloud "$e")")"
-    run_agent "$sub" "$e" &
+    mkdir -p "logs/$e"; rm -f "logs/$e/agent-$sub.rc"
+    ( if run_agent "$sub" "$e"; then rc=0; else rc=$?; fi; echo "$rc" > "logs/$e/agent-$sub.rc"; exit "$rc" ) &
     pids+=($!); names+=("$e")
   done
-  local i
-  for i in "${!pids[@]}"; do
-    if wait "${pids[$i]}"; then log "Agent $sub for ${names[$i]} done"; else failed+=("${names[$i]}"); fi
+  local i remaining=${#pids[@]}
+  while [ "$remaining" -gt 0 ]; do
+    for i in "${!pids[@]}"; do
+      [ -n "${pids[$i]}" ] && [ -f "logs/${names[$i]}/agent-$sub.rc" ] || continue
+      wait "${pids[$i]}" || true
+      if [ "$(cat "logs/${names[$i]}/agent-$sub.rc")" = 0 ]; then
+        log "Agent $sub for ${names[$i]} done"
+      else
+        failed+=("${names[$i]}")
+      fi
+      pids[$i]=""; remaining=$((remaining - 1))
+    done
+    [ "$remaining" -gt 0 ] && sleep 1
   done
   if [ ${#failed[@]} -gt 0 ]; then
     for e in "${failed[@]}"; do
