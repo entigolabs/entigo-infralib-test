@@ -55,6 +55,9 @@ options:
       --timeout D       go test timeout per module (default 45m)
       --run REGEX       only run tests matching REGEX
       --tag TAG         image tag (default: INFRALIB_TEST_VERSION, else latest)
+  INFRALIB_TEST_EXTRA_ENV  names of further variables to pass into the test
+                        containers (space or comma separated), for tests that
+                        need credentials beyond the cloud's own
       --no-pull         do not pull the images before running
   -q, --quiet           write agent logs to logs/<env>/agent.log instead of the terminal
   -v, --verbose         stream every test's output, not only failures
@@ -204,6 +207,16 @@ base_args() {
   local kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
   if [ "$role" = test ] && [ -f "$kubeconfig" ]; then
     ARGS+=(-v "$kubeconfig:/creds/kubeconfig:ro" -e KUBECONFIG=/creds/kubeconfig)
+  fi
+  # INFRALIB_TEST_EXTRA_ENV names further variables (space or comma separated)
+  # the tests read, passed into the test containers from this shell: extra
+  # credentials a test logs in with, say. Secrets have no place in the
+  # committed environments/<env>.env files, so this is how they travel.
+  if [ "$role" = test ]; then
+    local v
+    for v in ${INFRALIB_TEST_EXTRA_ENV//,/ }; do
+      if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
+    done
   fi
   case $cloud in
     cli)
