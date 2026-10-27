@@ -212,7 +212,7 @@ base_args() {
   # the tests read, passed into the test containers from this shell: extra
   # credentials a test logs in with, say. Secrets have no place in the
   # committed environments/<env>.env files, so this is how they travel.
-  if [ "$role" = test ]; then
+  if [ "$role" = test ] && [ -n "${INFRALIB_TEST_EXTRA_ENV:-}" ]; then
     local v
     for v in ${INFRALIB_TEST_EXTRA_ENV//,/ }; do
       if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
