@@ -146,7 +146,7 @@ Tests never hold cloud account ids, cluster names or hostnames: the cluster is d
 
 **Running against one environment.** `./test.sh test --env aws_biz` (or `INFRALIB_ENVIRONMENTS=aws_biz` for a bare `go test`) selects the environments; `env.Run` and `env.RunEach` run only those and skip the test when none is selected. Subtests are named after the environment, so `go test -run 'TestRoute/aws_biz'` works as well.
 
-Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 4); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
+Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 8: the tests mostly wait on the cloud, so more than the runner has cores); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
 
 ## Running
 

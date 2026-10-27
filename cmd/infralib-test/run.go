@@ -50,7 +50,7 @@ func runCommand(args []string) error {
 	fs.Var(&envNames, "env", "environment to test against (repeatable, default: every environment whose steps list a module)")
 	timeout := fs.Duration("timeout", 45*time.Minute, "go test timeout per package")
 	logDir := fs.String("log-dir", "", "directory for full per-module logs (default <root>/logs)")
-	parallel := fs.Int("parallel", 4, "packages compiled and run in parallel (go test -p)")
+	parallel := fs.Int("parallel", 8, "packages compiled and run in parallel (go test -p); the tests mostly wait on the cloud, so more than the runner has cores")
 	runFilter := fs.String("run", "", "regular expression passed to go test -run")
 	verbose := fs.Bool("verbose", false, "stream every test's output instead of only failures")
 	noAlign := fs.Bool("no-align", false, "do not align go.mod's framework version to this image's version")
