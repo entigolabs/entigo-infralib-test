@@ -65,12 +65,21 @@ aws_cli() {
   fi
 }
 
+# kept_by_config NAME: whether the configuration names the resource, as a
+# filter value or in a comment. The preparation steps below have no dry mode
+# and run before aws-nuke reads its filters, so this is how they learn what
+# the configuration keeps.
+kept_by_config() { grep -qF -- "$1" "$CONFIG"; }
+
 # aws-nuke cannot delete a bucket with versions or delete markers in it, so
 # every bucket is emptied first, including the agent's state buckets: the
-# nuked environments are provisioned from scratch afterwards anyway.
+# nuked environments are provisioned from scratch afterwards anyway. A
+# bucket the configuration names is kept, objects and all: the state bucket
+# of an environment whose steps are kept must survive with its state.
 empty_buckets() {
   local bucket batch
   for bucket in $(aws_cli s3api list-buckets --query 'Buckets[].Name' --output text); do
+    if kept_by_config "$bucket"; then log "Keeping bucket $bucket (named in the configuration)"; continue; fi
     log "Emptying bucket $bucket"
     while :; do
       batch=$(aws_cli s3api list-object-versions --bucket "$bucket" --max-items 500 --output json 2>/dev/null \
@@ -82,9 +91,15 @@ empty_buckets() {
 }
 
 # A running configuration recorder recreates its delivery channel and keeps
-# aws-nuke from removing the config service resources.
+# aws-nuke from removing the config service resources. A configuration that
+# excludes the recorders (a landing zone's, not the environment's) keeps
+# them running.
 stop_config_recorders() {
   local recorder
+  if grep -qE '^[[:space:]]*-[[:space:]]*ConfigServiceConfigurationRecorder[[:space:]]*$' "$CONFIG"; then
+    log "Configuration recorders are excluded from the nuke, leaving them running"
+    return 0
+  fi
   for recorder in $(aws_cli configservice describe-configuration-recorders --query 'ConfigurationRecorders[].name' --output text 2>/dev/null); do
     log "Stopping configuration recorder $recorder"
     aws_cli configservice stop-configuration-recorder --configuration-recorder-name "$recorder" || warn "could not stop $recorder"
