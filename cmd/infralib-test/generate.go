@@ -271,6 +271,17 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			}
 		}
 	}
+	// Likewise config/<step>/include next to its config: the agent copies
+	// those files into the step's working directory.
+	for _, f := range e.StepFiles {
+		include := filepath.Join(dir, env.IncludeDirName, f.Step, "include")
+		if err := os.MkdirAll(include, 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(include, f.Name), f.Content, 0o644); err != nil {
+			return nil, err
+		}
+	}
 	return runSteps, nil
 }
 

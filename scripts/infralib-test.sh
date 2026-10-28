@@ -73,7 +73,9 @@ overrides variables for that environment alone, in its agent container and in
 its tests: AWS_REGION=us-east-1 puts one environment in another region. Extra
 CA certificates in environments/ca-certificates/*.crt (every environment) or
 environments/<env>/ca-certificates/*.crt (one) are handed to the agent and to
-the route probes.
+the route probes; step include files in environments/config/<step>/include/
+(every environment) or environments/<env>/config/<step>/include/ (one) reach
+the agent as its config/<step>/include/.
 
 environment variables:
   INFRALIB_TEST_VERSION       image tag, normally pinned by test.sh

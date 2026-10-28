@@ -132,6 +132,9 @@ type Environment struct {
 	// CACertificates are the extra CA certificates of environments/ca-certificates
 	// and environments/<name>/ca-certificates, for the agent and the route probe.
 	CACertificates []CACertificate
+	// StepFiles are the include files of environments/config/<step>/include
+	// and environments/<name>/config/<step>/include, for the agent.
+	StepFiles []StepFile
 
 	raw map[string]any
 }
@@ -229,6 +232,9 @@ func loadEnvironment(root, file string) (*Environment, error) {
 		return nil, err
 	}
 	if err := e.loadCACertificates(root); err != nil {
+		return nil, err
+	}
+	if err := e.loadStepFiles(root); err != nil {
 		return nil, err
 	}
 	e.loadCloudSettings()

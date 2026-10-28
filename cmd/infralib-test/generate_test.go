@@ -383,3 +383,26 @@ func TestGenerateCopiesCACertificates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pem, string(content))
 }
+
+func TestGenerateCopiesStepFiles(t *testing.T) {
+	config := fixture(t)
+	root := config.Root()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "environments", "config", "net", "include"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "environments", "config", "net", "include", "shared.tf"), []byte("shared"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "environments", "aws_exa", "config", "net", "include"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "environments", "aws_exa", "config", "net", "include", "zone.tf"), []byte("zone"), 0o644))
+	config, err := env.Load(root)
+	require.NoError(t, err)
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err = generate(generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}})
+	require.NoError(t, err)
+	aws, err := os.ReadDir(filepath.Join(out, "aws_exa", "config", "net", "include"))
+	require.NoError(t, err)
+	require.Len(t, aws, 2, "the shared file and aws_exa's own")
+	google, err := os.ReadDir(filepath.Join(out, "google_exa", "config", "net", "include"))
+	require.NoError(t, err)
+	require.Len(t, google, 1, "only the shared file")
+	content, err := os.ReadFile(filepath.Join(out, "aws_exa", "config", "net", "include", "zone.tf"))
+	require.NoError(t, err)
+	require.Equal(t, "zone", string(content))
+}

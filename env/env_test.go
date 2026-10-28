@@ -158,3 +158,37 @@ func TestCACertificatesSharedAndOwn(t *testing.T) {
 	_, err = Load(root)
 	require.ErrorContains(t, err, "bad.crt: not a PEM certificate")
 }
+
+func TestStepFilesSharedAndOwn(t *testing.T) {
+	root := t.TempDir()
+	writeEnv(t, root, "aws_biz", minimal)
+	writeEnv(t, root, "oracle_biz", minimal)
+	shared := filepath.Join(root, DirName, IncludeDirName, "net", "include")
+	own := filepath.Join(root, DirName, "oracle_biz", IncludeDirName, "net", "include")
+	require.NoError(t, os.MkdirAll(shared, 0o755))
+	require.NoError(t, os.MkdirAll(own, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(shared, "zone.tf"), []byte("shared"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(shared, "alias.tf"), []byte("alias"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(own, "zone.tf"), []byte("own"), 0o644))
+	config, err := Load(root)
+	require.NoError(t, err)
+	aws := config.Environments["aws_biz"].StepFiles
+	require.Len(t, aws, 2)
+	require.Equal(t, []string{"alias.tf", "zone.tf"}, []string{aws[0].Name, aws[1].Name}, "sorted by name")
+	require.Equal(t, "net", aws[0].Step)
+	require.Equal(t, filepath.Join("environments", "config", "net", "include", "alias.tf"), aws[0].Path)
+	oracle := config.Environments["oracle_biz"].StepFiles
+	require.Len(t, oracle, 2)
+	require.Equal(t, "own", string(oracle[1].Content), "the environment's own file replaces the shared one of the same name")
+	require.Equal(t, filepath.Join("environments", "oracle_biz", "config", "net", "include", "zone.tf"), oracle[1].Path)
+}
+
+func TestStepFilesUnknownStep(t *testing.T) {
+	root := t.TempDir()
+	writeEnv(t, root, "aws_biz", minimal)
+	dir := filepath.Join(root, DirName, "aws_biz", IncludeDirName, "nosuchstep", "include")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "x.tf"), []byte("x"), 0o644))
+	_, err := Load(root)
+	require.ErrorContains(t, err, "has no step nosuchstep")
+}
