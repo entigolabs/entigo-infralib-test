@@ -37,7 +37,7 @@ Each file is an ordinary [entigo-infralib-agent](https://github.com/entigolabs/e
 - the repository itself becomes the first source, restricted with `include:` to the modules it holds, so the agent takes everything else from the file's own `sources:`;
 - modules without a `name` get the agent's conventional one, `<module>` for terraform modules and `<module>-<prefix>` for k8s modules;
 - modules of this repository get the inputs of their `test/<env>.yaml`;
-- in a pull request, the modules under test are appended as steps of their own;
+- in a pull request, the modules under test are appended as steps of their own, each marked `default_module` along with the gateway copy its step carries: the config then holds those modules twice, and the agent's config-wide typed lookup (`tmodule`) fails on a type it finds several times with no default, as when two modules under test refer to each other; an environment's own `default_module` comes first in the config and keeps its say;
 - `manual_approve_run` and `manual_approve_update` default to `never`, because a test run has nobody to answer the agent's prompt; a step that sets them keeps its value.
 
 Everything else passes through untouched, so a new agent field needs no framework change.

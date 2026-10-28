@@ -190,7 +190,6 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	// config untouched so that every template reference resolves and the
 	// state keeps every module, but only the per-module steps run.
 	var runSteps []string
-	gatewayDefaulted := false
 	for _, m := range opts.Modules {
 		home, ok := config.Find(e, m.Source)
 		if !ok {
@@ -223,19 +222,28 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		if inPlace {
 			own.Name = home.Module.AgentName(e)
 		}
+		// The config now holds the module twice, here and in its regular
+		// step. The agent's tmodule lookup is config-wide and fails on a
+		// type it finds several times with none marked default ("found
+		// multiple modules with type kyverno and no default"), as when a
+		// second module under test refers to this one. The copy here is the
+		// default: the one applied in this run, and in place of the same
+		// name as the regular one. The agent takes the first default in
+		// config order, so an environment that marks a module of the type
+		// default itself keeps its choice, the regular steps come first.
+		own.DefaultModule = true
 		modules := []any{toRaw(own)}
 		// The gateway module a chart chains inputs from must be present in
 		// the step, since tinput and toptin resolve within a step. It is
-		// applied there too, under its regular name. With several such steps
-		// the config holds the gateway several times, and the agent's
-		// config-wide tmodule lookup wants exactly one marked default.
+		// applied there too, under its regular name, and marked default for
+		// the same reason: with several own steps the config holds it
+		// several times. Find skips these copies, see env.AgentConfig.Find.
 		if gw, ok := config.GatewayModule(e); ok && gw.Step.Name == home.Step.Name && gw.Module.Source != m.Source && home.Step.Type == env.StepTypeArgoCD {
 			def, err := agentModule(config, e, gw.Module)
 			if err != nil {
 				return nil, err
 			}
-			def.DefaultModule = !gatewayDefaulted
-			gatewayDefaulted = true
+			def.DefaultModule = true
 			modules = append(modules, toRaw(def))
 		}
 		rawStep["modules"] = modules

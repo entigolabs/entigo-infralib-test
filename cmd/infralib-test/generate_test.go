@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -192,12 +193,20 @@ func TestGenerateModuleStep(t *testing.T) {
 	require.Equal(t, env.StepTypeArgoCD, last.Type)
 	require.Equal(t, "argocd-exa", last.ArgocdNamespace)
 	// The k8s module gets a branch-prefixed name so it does not replace the
-	// regular deployment; the gateway module rides along with its inputs as a
-	// default that is not applied, under its regular name.
+	// regular deployment; the gateway module rides along with its inputs,
+	// under its regular name. Both are marked default: the config holds
+	// each source twice now, and the agent's config-wide typed lookup fails
+	// on a type with several modules and no default.
 	require.Equal(t, "mart-foo-hello-world-exa=hello-world aws-alb-exa=aws-alb", strings.Join(moduleNames(last), " "))
+	require.True(t, last.Modules[0].DefaultModule)
 	require.True(t, last.Modules[1].DefaultModule)
+	for _, step := range agent.Steps[:3] {
+		for _, m := range step.Modules {
+			require.False(t, m.DefaultModule, "%s in %s", m.Source, step.Name)
+		}
+	}
 	require.Equal(t, "public", last.Modules[1].Inputs["global"].(map[string]any)["externalGateway"])
-	p, ok := agent.Find("hello-world")
+	p, ok := agent.Find("hello-world", regularStep)
 	require.True(t, ok)
 	require.Equal(t, "mart-foo-hello-world", p.Step.Name, "Find prefers the per-module step")
 	require.Equal(t, "mart-foo-hello-world-exa", p.Module.Name, "and reports the branch-prefixed application")
@@ -251,7 +260,7 @@ func TestGenerateInPlaceK8s(t *testing.T) {
 	require.Equal(t, "net,infra,apps,main-hello-world", strings.Join(stepNames(agent), ","))
 	last := agent.Steps[len(agent.Steps)-1]
 	require.Equal(t, "hello-world-exa=hello-world aws-alb-exa=aws-alb", strings.Join(moduleNames(last), " "))
-	p, ok := agent.Find("hello-world")
+	p, ok := agent.Find("hello-world", regularStep)
 	require.True(t, ok)
 	require.Equal(t, "main-hello-world", p.Step.Name)
 	require.Equal(t, "hello-world-exa", p.Module.Name)
@@ -288,16 +297,20 @@ func TestGenerateTwoModulesOneDefaultGateway(t *testing.T) {
 	require.NoError(t, err)
 	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
 	require.Equal(t, "net,infra,apps,main-hello-world,main-hello-other", strings.Join(stepNames(agent), ","))
-	defaults := 0
-	for _, step := range agent.Steps {
+	// Every module of the own steps is marked default (the two under test
+	// and the gateway copy each carries), nothing in the regular steps is;
+	// the agent takes the first default of a type in config order.
+	require.Equal(t, []string{"aws-alb", "aws-alb", "hello-other", "hello-world"}, defaultSources(agent))
+	for _, step := range agent.Steps[3:] {
 		for _, m := range step.Modules {
-			if m.DefaultModule {
-				defaults++
-				require.Equal(t, "aws-alb", m.Source)
-			}
+			require.True(t, m.DefaultModule, "%s in %s", m.Source, step.Name)
 		}
 	}
-	require.Equal(t, 1, defaults, "the agent accepts one default module per type")
+	// Find skips the gateway copies of the own steps: the gateway was not
+	// tested, so it is found in its regular step.
+	p, ok := agent.Find("aws-alb", regularStep)
+	require.True(t, ok)
+	require.Equal(t, "apps", p.Step.Name)
 	// Both per-module steps still carry the gateway for step-scoped templating.
 	for _, name := range []string{"main-hello-world", "main-hello-other"} {
 		for _, step := range agent.Steps {
@@ -406,3 +419,48 @@ func TestGenerateCopiesStepFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "zone", string(content))
 }
+
+// defaultSources lists the sources of the modules marked default_module, each
+// with the step holding it, sorted; the regular steps come first in a config.
+func defaultSources(agent env.AgentConfig) []string {
+	var result []string
+	for _, step := range agent.Steps {
+		for _, m := range step.Modules {
+			if m.DefaultModule {
+				result = append(result, m.Source)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func TestGenerateKeepsEnvironmentDefault(t *testing.T) {
+	// An environment that marks a module default itself keeps that choice.
+	root := fixture(t).Root()
+	data, err := os.ReadFile(filepath.Join(root, "environments", "aws_exa.yaml"))
+	require.NoError(t, err)
+	patched := strings.Replace(string(data), "      - source: aws-alb\n", "      - source: aws-alb\n        default_module: true\n", 1)
+	require.NotEqual(t, string(data), patched)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "environments", "aws_exa.yaml"), []byte(patched), 0o644))
+	config, err := env.Load(root)
+	require.NoError(t, err)
+	hello, err := config.ModuleBySource("hello-world")
+	require.NoError(t, err)
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err = generate(generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}, Modules: []env.Module{hello}, StepPrefix: "mart-foo"})
+	require.NoError(t, err)
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, []string{"aws-alb", "aws-alb", "hello-world"}, defaultSources(agent))
+	for _, m := range agent.Steps[2].Modules {
+		if m.Source == "aws-alb" {
+			require.True(t, m.DefaultModule, "the environment's own default stays, and comes first in config order")
+		}
+	}
+	p, ok := agent.Find("aws-alb", regularStep)
+	require.True(t, ok)
+	require.Equal(t, "apps", p.Step.Name, "the environment's own default is not a gateway copy")
+}
+
+// regularStep tells the fixture environments' own steps from per-module ones.
+func regularStep(name string) bool { return name == "net" || name == "infra" || name == "apps" }

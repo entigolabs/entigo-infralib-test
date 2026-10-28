@@ -80,17 +80,29 @@ type AgentPlacement struct {
 	Module AgentModule
 }
 
-// Find locates a module source in the agent config. When the source appears in
-// several steps the last one wins: a per-branch step is appended after the
-// regular steps and is the one the agent actually ran.
-func (a *AgentConfig) Find(source string) (AgentPlacement, bool) {
+// Find locates a module source in the agent config. regular tells the
+// environment's own steps from the per-module steps the generator appends
+// after them. A per-module step opens with the module it tests and may carry
+// a copy of the gateway its chart chains inputs from after it, which is not
+// where the gateway was tested. The last per-module step opening with the
+// source wins, that is the one the agent actually ran; else the last
+// occurrence in a regular step, the place of a full run.
+func (a *AgentConfig) Find(source string, regular func(step string) bool) (AgentPlacement, bool) {
 	var result AgentPlacement
-	found := false
+	found, own := false, false
 	for _, step := range a.Steps {
-		for _, m := range step.Modules {
-			if m.Source == source && !m.DefaultModule {
-				result = AgentPlacement{Step: step, Module: m}
-				found = true
+		for i, m := range step.Modules {
+			if m.Source != source {
+				continue
+			}
+			if !regular(step.Name) {
+				if i == 0 {
+					result, found, own = AgentPlacement{Step: step, Module: m}, true, true
+				}
+				continue
+			}
+			if !own {
+				result, found = AgentPlacement{Step: step, Module: m}, true
 			}
 		}
 	}
@@ -114,7 +126,7 @@ func (c *Config) PlacementOf(t logger.T, e *Environment, m Module) AgentPlacemen
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	p, ok := agent.Find(m.Source)
+	p, ok := agent.Find(m.Source, func(step string) bool { _, ok := e.Step(step); return ok })
 	if !ok {
 		t.Fatalf("module %s is not part of the generated agent config for %s (%s)", m.Source, e.Name, c.AgentConfigPath(e))
 	}
