@@ -297,15 +297,12 @@ func TestGenerateTwoModulesOneDefaultGateway(t *testing.T) {
 	require.NoError(t, err)
 	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
 	require.Equal(t, "net,infra,apps,main-hello-world,main-hello-other", strings.Join(stepNames(agent), ","))
-	// Every module of the own steps is marked default (the two under test
-	// and the gateway copy each carries), nothing in the regular steps is;
-	// the agent takes the first default of a type in config order.
-	require.Equal(t, []string{"aws-alb", "aws-alb", "hello-other", "hello-world"}, defaultSources(agent))
-	for _, step := range agent.Steps[3:] {
-		for _, m := range step.Modules {
-			require.True(t, m.DefaultModule, "%s in %s", m.Source, step.Name)
-		}
-	}
+	// Each source is marked default once, as the agent rejects two defaults
+	// of a type: the two modules under test, and the gateway copy of the
+	// first own step only.
+	require.Equal(t, []string{"aws-alb", "hello-other", "hello-world"}, defaultSources(agent))
+	require.True(t, agent.Steps[3].Modules[1].DefaultModule, "the first gateway copy")
+	require.False(t, agent.Steps[4].Modules[1].DefaultModule, "the second gateway copy")
 	// Find skips the gateway copies of the own steps: the gateway was not
 	// tested, so it is found in its regular step.
 	p, ok := agent.Find("aws-alb", regularStep)
@@ -451,10 +448,10 @@ func TestGenerateKeepsEnvironmentDefault(t *testing.T) {
 	_, err = generate(generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}, Modules: []env.Module{hello}, StepPrefix: "mart-foo"})
 	require.NoError(t, err)
 	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
-	require.Equal(t, []string{"aws-alb", "aws-alb", "hello-world"}, defaultSources(agent))
+	require.Equal(t, []string{"aws-alb", "hello-world"}, defaultSources(agent), "the gateway copy is not marked a second time")
 	for _, m := range agent.Steps[2].Modules {
 		if m.Source == "aws-alb" {
-			require.True(t, m.DefaultModule, "the environment's own default stays, and comes first in config order")
+			require.True(t, m.DefaultModule, "the environment's own default stays")
 		}
 	}
 	p, ok := agent.Find("aws-alb", regularStep)

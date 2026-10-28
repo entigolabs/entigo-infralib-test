@@ -190,6 +190,28 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	// config untouched so that every template reference resolves and the
 	// state keeps every module, but only the per-module steps run.
 	var runSteps []string
+	// The agent rejects a config with two modules of one type marked default
+	// ("multiple default modules found with type aws-alb"), so each source is
+	// marked once: by the environment itself, or else by the first per-module
+	// step that holds it.
+	defaulted := map[string]bool{}
+	for _, rs := range rawSteps {
+		step, _ := rs.(map[string]any)
+		modules, _ := step["modules"].([]any)
+		for _, rm := range modules {
+			module, _ := rm.(map[string]any)
+			if d, _ := module["default_module"].(bool); d {
+				source, _ := module["source"].(string)
+				defaulted[source] = true
+			}
+		}
+	}
+	markDefault := func(m *env.AgentModule) {
+		if !defaulted[m.Source] {
+			m.DefaultModule = true
+			defaulted[m.Source] = true
+		}
+	}
 	for _, m := range opts.Modules {
 		home, ok := config.Find(e, m.Source)
 		if !ok {
@@ -227,23 +249,21 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		// type it finds several times with none marked default ("found
 		// multiple modules with type kyverno and no default"), as when a
 		// second module under test refers to this one. The copy here is the
-		// default: the one applied in this run, and in place of the same
-		// name as the regular one. The agent takes the first default in
-		// config order, so an environment that marks a module of the type
-		// default itself keeps its choice, the regular steps come first.
-		own.DefaultModule = true
+		// default, the one applied in this run, unless the environment
+		// marks a module of the source default itself.
+		markDefault(&own)
 		modules := []any{toRaw(own)}
 		// The gateway module a chart chains inputs from must be present in
 		// the step, since tinput and toptin resolve within a step. It is
-		// applied there too, under its regular name, and marked default for
-		// the same reason: with several own steps the config holds it
-		// several times. Find skips these copies, see env.AgentConfig.Find.
+		// applied there too, under its regular name. With several own steps
+		// the config holds it several times, so its first copy is the
+		// default. Find skips these copies, see env.AgentConfig.Find.
 		if gw, ok := config.GatewayModule(e); ok && gw.Step.Name == home.Step.Name && gw.Module.Source != m.Source && home.Step.Type == env.StepTypeArgoCD {
 			def, err := agentModule(config, e, gw.Module)
 			if err != nil {
 				return nil, err
 			}
-			def.DefaultModule = true
+			markDefault(&def)
 			modules = append(modules, toRaw(def))
 		}
 		rawStep["modules"] = modules
