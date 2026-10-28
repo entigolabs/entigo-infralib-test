@@ -86,11 +86,14 @@ check_chart() {
   local module=$1 name values=() ignore=()
   name=$(basename "$module")
   [ -f "$module/test/static_values.yaml" ] && values=(-f test/static_values.yaml)
+  # The function runs on the right of ||, where errexit is off, so each
+  # failure returns by hand: a chart that does not lint or render must fail
+  # here, not pass an empty render to kube-score.
   log "helm lint $module"
-  run "$HELM_IMAGE" "$ROOT/$module" -- lint --strict "${values[@]}" .
+  run "$HELM_IMAGE" "$ROOT/$module" -- lint --strict "${values[@]}" . || return 1
   log "helm template $module"
   local rendered
-  rendered=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${values[@]}" .)
+  rendered=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${values[@]}" .) || return 1
   log "kube-score $module"
   for check in "${KUBE_SCORE_DEFAULT_IGNORE[@]}"; do ignore+=(--ignore-test "$check"); done
   while read -r check; do [ -n "$check" ] && ignore+=(--ignore-test "$check"); done < <(kube_score_ignore "$module")
