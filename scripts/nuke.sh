@@ -55,11 +55,19 @@ CONFIG=$(realpath "${NUKE_CONFIG:-nuke/$CLOUD.yaml}") || die "no nuke configurat
 [ "$DRY_RUN" = true ] && log "Dry run: nothing is deleted"
 
 # ------------------------------------------------------------------- aws
+# ROLE_ARN: the account to nuke is reached by assuming a role, through a
+# profile every container gets (see aws-role.sh); the config names the
+# account, and aws-nuke refuses any other.
+# shellcheck source=aws-role.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aws-role.sh"
+AWS_ROLE_ARGS=()
+aws_role_setup "$(pwd -P)/.infralib-test/aws-role" || die "cannot set up ROLE_ARN"
+
 aws_cli() {
   if command -v aws >/dev/null 2>&1; then
     aws "$@"
   else
-    docker run --rm --entrypoint aws \
+    docker run --rm --entrypoint aws "${AWS_ROLE_ARGS[@]}" \
       -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION -e AWS_DEFAULT_REGION="$AWS_REGION" \
       "$AWS_CLI_IMAGE" "$@"
   fi
@@ -107,16 +115,21 @@ stop_config_recorders() {
 }
 
 nuke_aws() {
-  : "${AWS_ACCESS_KEY_ID:?}" "${AWS_SECRET_ACCESS_KEY:?}" "${AWS_REGION:?}"
+  : "${AWS_REGION:?}"
+  local args=(run --config /home/aws-nuke/config.yml --force --max-wait-retries 100)
+  if [ -n "${ROLE_ARN:-}" ]; then
+    args+=(--profile infralib-test)
+  else
+    : "${AWS_ACCESS_KEY_ID:?}" "${AWS_SECRET_ACCESS_KEY:?}"
+    args+=(--access-key-id "$AWS_ACCESS_KEY_ID" --secret-access-key "$AWS_SECRET_ACCESS_KEY")
+    [ -n "${AWS_SESSION_TOKEN:-}" ] && args+=(--session-token "$AWS_SESSION_TOKEN")
+  fi
   if [ "$DRY_RUN" = false ]; then
     stop_config_recorders
     empty_buckets
   fi
-  local args=(run --config /home/aws-nuke/config.yml --force --max-wait-retries 100
-    --access-key-id "$AWS_ACCESS_KEY_ID" --secret-access-key "$AWS_SECRET_ACCESS_KEY")
-  [ -n "${AWS_SESSION_TOKEN:-}" ] && args+=(--session-token "$AWS_SESSION_TOKEN")
   [ "$DRY_RUN" = false ] && args+=(--no-dry-run)
-  docker run --rm -e AWS_REGION -v "$CONFIG":/home/aws-nuke/config.yml:ro "$AWS_NUKE_IMAGE" "${args[@]}"
+  docker run --rm -e AWS_REGION "${AWS_ROLE_ARGS[@]}" -v "$CONFIG":/home/aws-nuke/config.yml:ro "$AWS_NUKE_IMAGE" "${args[@]}"
 }
 
 # ---------------------------------------------------------------- google

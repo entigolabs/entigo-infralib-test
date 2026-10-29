@@ -176,6 +176,14 @@ With module arguments each module is applied in a step named `<step-prefix>-<mod
 
 The agent runs from the test image itself, so agent, tofu, kubectl and the tests always come from one image. `INFRALIB_AGENT_IMAGE` overrides that for pre-release agents.
 
+### Running from another account, and from GitLab
+
+`ROLE_ARN` names a role in the account the environments live in, assumed for everything the orchestrator runs there: the agent, the tests, the kubeconfig, the nuke and the publish. The credentials to assume it with are the shell's own: a pod's web identity (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, IRSA on EKS), access keys, or the `~/.aws` profile. A session chained from a role lasts an hour, shorter than a run, so the role is not assumed once and passed on as keys: every container gets an AWS config file with a profile that names the role and its source, and the SDKs in the containers assume and refresh it themselves (`scripts/aws-role.sh`). This is how a CI job in one account tests an environment in another, the way the agent's own `ROLE_ARN` works.
+
+Three commands exist for a CI system without the GitHub actions. `test.sh kubeconfig` writes the contexts of the selected environments' clusters to `.infralib-test/kubeconfig` with the cloud CLI of each environment's image, and the test containers use that file unless `KUBECONFIG` is set. `test.sh nuke <cloud> [--dry-run]` runs `scripts/nuke.sh` with `nuke/<cloud>.yaml`. `test.sh publish --registries R[,R...] --release X.Y.Z` runs the OCI publish (`scripts/oci`, the same scripts the GitHub release workflow uses) from the aws image, logging in to ghcr.io (`GH_TOKEN`, `GH_ACTOR`), ECR Public or a private ECR registry (the AWS credentials, repositories created as needed), and leaves `manifest.json` and the index zip in `.infralib-test/oci-publish`; `OCI_SIGN=false` skips the cosign signatures where keyless signing has no OIDC token or no way to Sigstore.
+
+A GitLab job runs the orchestrator from the per-cloud test image itself, which carries the docker CLI for a docker-in-docker service, with the images pulled through the job's registry mirrors (`INFRALIB_TEST_IMAGE_PREFIX`, the tool image variables of `scripts/static.sh` and `scripts/nuke.sh`).
+
 ## One version pin
 
 `INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. `infralib-test run` aligns the repository's `go.mod` to that tag before testing (or, for `dev`, `main` and `<sha>` images, to the commit baked into the image, see `infralib-test version`), with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
@@ -221,7 +229,7 @@ Done: the example repository end to end on AWS, Google Cloud and Oracle; nuke an
 
 1. Migrate `entigo-infralib` (in progress on a branch).
 2. Azure end to end: environments (`azure_<prefix>.yaml`), the `azure` state reader (Blob Storage of the agent's storage account in `<prefix>-<location>`), the image, the credentials and kubeconfig actions and the workflows are in place; the first real run waits for an agent release with Azure support (entigo-infralib-agent #78, merged) and the entigo-infralib Azure environments.
-3. GitLab CI: the orchestrator without docker inside the test image, and OCI publishing as a script, so a repository on GitLab runners can test and release with the same images.
+3. GitLab CI: done for a runner with docker-in-docker (`ROLE_ARN`, the `kubeconfig`, `nuke` and `publish` commands); the orchestrator without docker, for a runner that has none, is open.
 4. Certificate verification in the route probe: the bundle with the environment's extra CAs is in place, curl still runs with `-k`; switching verification on is a one-line change once every environment's routes are known to carry valid certificates.
 ## Development
 

@@ -34,6 +34,16 @@ commands:
   static     static checks of the given modules (all without arguments), no
              cloud needed: tflint for terraform modules, helm lint, helm
              template and kube-score for charts (scripts/static.sh)
+  kubeconfig contexts for the selected environments' clusters, written by the
+             cloud CLI of each environment's image to .infralib-test/kubeconfig,
+             which the tests then use (KUBECONFIG in the shell still wins)
+  nuke       the nuke script with its arguments (test.sh nuke aws --dry-run):
+             everything in the cloud's account that nuke/<cloud>.yaml does not
+             keep goes (scripts/nuke.sh)
+  publish    the repository's charts and modules as OCI packages with a signed
+             index, from the aws image: --registries REG[,REG...] (the first is
+             pushed to, the rest mirrored) --release X.Y.Z; OCI_SIGN=false
+             skips the signatures (scripts/oci)
 
 options:
   -e, --env NAME        environment to use (repeatable). Default: every
@@ -58,6 +68,13 @@ options:
   INFRALIB_TEST_EXTRA_ENV  names of further variables to pass into the test
                         containers (space or comma separated), for tests that
                         need credentials beyond the cloud's own
+  ROLE_ARN              a role in the environments' AWS account to assume for
+                        everything (agent, tests, kubeconfig, nuke, publish),
+                        with this shell's credentials: a web identity
+                        (AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, a pod
+                        with IRSA), access keys, or the ~/.aws profile. Every
+                        container gets a profile that chains the role and
+                        refreshes it, since a chained session lasts an hour
       --no-pull         do not pull the images before running
   -q, --quiet           write agent logs to logs/<env>/agent.log instead of the terminal
   -v, --verbose         stream every test's output, not only failures
@@ -127,12 +144,18 @@ PULL=true
 QUIET=false
 VERBOSE=false
 
+NUKE_ARGS=()
+REGISTRIES=""
+RELEASE=""
 case "${1:-}" in
-  run|agent|test|generate|destroy|envs|shell|static) COMMAND=$1; shift ;;
+  run|agent|test|generate|destroy|envs|shell|static|kubeconfig|publish) COMMAND=$1; shift ;;
+  nuke) COMMAND=nuke; shift; NUKE_ARGS=("$@"); set -- ;;
 esac
 while [ $# -gt 0 ]; do
   case "$1" in
     -e|--env) ENVS+=("$2"); shift 2 ;;
+    --registries) REGISTRIES=$2; shift 2 ;;
+    --release) RELEASE=$2; shift 2 ;;
     --source) SELF_SOURCE=$2; shift 2 ;;
     --version) SELF_VERSION=$2; shift 2 ;;
     --in-place) IN_PLACE=true; shift ;;
@@ -162,8 +185,13 @@ while ! compgen -G "$ROOT/environments/*.yaml" >/dev/null; do
 done
 cd "$ROOT"
 mkdir -p agents logs
+# Where the kubeconfig command writes, relative to the root; the containers
+# see it under /conf.
+KUBECONFIG_FILE=.infralib-test/kubeconfig
 IMAGE_PREFIX="${INFRALIB_TEST_IMAGE_PREFIX:-entigolabs/entigo-infralib-test-}"
 image_for() { echo "${IMAGE_PREFIX}$1:${TAG}"; }
+# shellcheck source=aws-role.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aws-role.sh"
 
 PULLED=()
 pull() {
@@ -179,7 +207,7 @@ pull() {
 # ---------------------------------------------------------------- credentials
 # A cloud is usable when credentials and the region settings the agent and
 # the tests read are present. Regions are never defaulted here.
-have_aws()    { { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_PROFILE:-}" ] || [ -f "$HOME/.aws/credentials" ]; } && [ -n "${AWS_REGION:-}" ]; }
+have_aws()    { { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_PROFILE:-}" ] || [ -f "$HOME/.aws/credentials" ] || [ -n "${ROLE_ARN:-}" ] || [ -n "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; } && [ -n "${AWS_REGION:-}" ]; }
 have_google() { { [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ -d "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}" ]; } && [ -n "${GOOGLE_PROJECT:-}" ] && [ -n "${GOOGLE_REGION:-}" ] && [ -n "${GOOGLE_ZONE:-}" ]; }
 have_oracle() { [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] && [ -n "${OCI_REGION:-}" ] && [ -n "${OCI_COMPARTMENT_ID:-}" ]; }
 have_azure()  { { [ -n "${AZURE_CLIENT_SECRET:-}" ] || [ -d "${AZURE_CONFIG_DIR:-$HOME/.azure}" ]; } && [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_LOCATION:-}" ]; }
@@ -206,7 +234,10 @@ base_args() {
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
         -e INFRALIB_ROOT=/conf -e "INFRALIB_TEST_VERSION=$TAG" -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
   mkdir -p .infralib-test/plugin-cache
-  local kubeconfig="${KUBECONFIG:-$HOME/.kube/config}"
+  # The kubeconfig the tests use: KUBECONFIG, else the one the kubeconfig
+  # command wrote into the checkout, else the executor's own.
+  local kubeconfig="${KUBECONFIG:-}"
+  [ -n "$kubeconfig" ] || { [ -f "$ROOT/$KUBECONFIG_FILE" ] && kubeconfig="$ROOT/$KUBECONFIG_FILE"; } || kubeconfig="$HOME/.kube/config"
   if [ "$role" = test ] && [ -f "$kubeconfig" ]; then
     ARGS+=(-v "$kubeconfig:/creds/kubeconfig:ro" -e KUBECONFIG=/creds/kubeconfig)
   fi
@@ -230,11 +261,22 @@ base_args() {
       done
       ;;
     aws)
-      for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
-        if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
-      done
-      if [ -d "$HOME/.aws" ]; then
-        ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials -e AWS_CONFIG_FILE=/creds/aws/config)
+      if [ -n "${ROLE_ARN:-}" ]; then
+        # A role in the environments' account, assumed inside every
+        # container through a profile (see aws-role.sh); the shell's own
+        # credentials are the ones to assume it with.
+        aws_role_setup "$ROOT/.infralib-test/aws-role" || die "cannot set up ROLE_ARN"
+        ARGS+=("${AWS_ROLE_ARGS[@]}")
+        if [ "$AWS_ROLE_SOURCE" = profile ] && [ -d "$HOME/.aws" ]; then
+          ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials)
+        fi
+      else
+        for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
+          if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
+        done
+        if [ -d "$HOME/.aws" ]; then
+          ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials -e AWS_CONFIG_FILE=/creds/aws/config)
+        fi
       fi
       ;;
     google)
@@ -297,9 +339,12 @@ load_environments() {
   [ ${#ENV_ROWS[@]} -gt 0 ] || die "infralib-test envs returned nothing"
 }
 env_field() { # env_field NAME INDEX
+  # read treats a run of tabs as one separator, which would shift the
+  # columns after an empty one (zone, project, compartment of an aws
+  # environment), so the separator becomes one it does not collapse.
   local row
   for row in "${ENV_ROWS[@]}"; do
-    IFS=$'\t' read -r -a f <<<"$row"
+    IFS='|' read -r -a f <<<"${row//$'\t'/|}"
     if [ "${f[0]}" = "$1" ]; then echo "${f[$2]:-}"; return 0; fi
   done
   die "environment $1 is not defined in environments.yaml"
@@ -515,8 +560,76 @@ run_tests() {
   return $rc
 }
 
+# ---------------------------------------------------------------- kubeconfig
+# write_kubeconfig ENV: the cloud CLI of the environment's image adds the
+# context of the environment's cluster to .infralib-test/kubeconfig, the file
+# the test containers then get. A cluster that does not exist (yet) is a
+# warning: terraform module tests need no cluster, and a k8s test that does
+# fails on its own. Region, project and compartment are the environment's
+# own (the shell's variables with environments/<env>.env applied). The OKE
+# context is renamed to the cluster name, since oci names it after the
+# cluster OCID; the AKS kubeconfig is converted to exec kubelogin as the
+# service principal, after an az login of its own.
+write_kubeconfig() (
+  local e=$1 cloud region project compartment cluster prefix
+  cloud=$(env_cloud "$e"); prefix=$(env_prefix "$e")
+  region=$(env_field "$e" 3); project=$(env_field "$e" 5); compartment=$(env_field "$e" 6); cluster=$(env_field "$e" 7)
+  [ -n "$cluster" ] || { log "No cluster module in $e, no kubeconfig"; return 0; }
+  apply_overrides "$e"
+  base_args "$cloud" agent
+  ARGS+=(-e "KUBECONFIG=/conf/$KUBECONFIG_FILE")
+  local image; image=$(image_for "$cloud")
+  local missing="no kubeconfig for $e: cluster $cluster is not available"
+  log "kubeconfig for $e: cluster $cluster in ${region:-?}"
+  case $cloud in
+    aws)
+      docker run "${ARGS[@]}" --entrypoint aws "$image" eks update-kubeconfig --region "$region" --name "$cluster" --kubeconfig "/conf/$KUBECONFIG_FILE" \
+        || warn "$missing" ;;
+    google)
+      docker run "${ARGS[@]}" --entrypoint gcloud "$image" container clusters get-credentials "$cluster" --region "$region" --project "$project" \
+        || warn "$missing" ;;
+    oracle)
+      local id
+      id=$(docker run "${ARGS[@]}" --entrypoint oci "$image" ce cluster list --compartment-id "$compartment" --region "$region" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
+      if [ -z "$id" ] || [ "$id" = null ]; then warn "$missing"; return 0; fi
+      docker run "${ARGS[@]}" --entrypoint sh "$image" -c "oci ce cluster create-kubeconfig --cluster-id '$id' --region '$region' --file \"\$KUBECONFIG\" --token-version 2.0.0 --kube-endpoint ${OCI_KUBE_ENDPOINT:-PUBLIC_ENDPOINT} && kubectl config rename-context \"\$(kubectl config current-context)\" '$cluster'" \
+        || warn "$missing" ;;
+    azure)
+      docker run "${ARGS[@]}" --entrypoint sh "$image" -c "az login --service-principal -u \"\$AZURE_CLIENT_ID\" -p \"\$AZURE_CLIENT_SECRET\" --tenant \"\$AZURE_TENANT_ID\" --output none && az account set --subscription \"\$AZURE_SUBSCRIPTION_ID\" && az aks get-credentials --resource-group '${AZURE_RESOURCE_GROUP:-${prefix}-${region}}' --name '$cluster' --file \"\$KUBECONFIG\" --overwrite-existing && kubelogin convert-kubeconfig -l spn --client-id \"\$AZURE_CLIENT_ID\" --tenant-id \"\$AZURE_TENANT_ID\" --kubeconfig \"\$KUBECONFIG\"" \
+        || warn "$missing" ;;
+  esac
+)
+
 # ---------------------------------------------------------------- commands
 case $COMMAND in
+  kubeconfig)
+    # Contexts for the selected environments' clusters, into
+    # .infralib-test/kubeconfig, where the test containers pick them up.
+    select_environments
+    mkdir -p "$(dirname "$KUBECONFIG_FILE")"
+    for e in "${ENVS[@]}"; do pull "$(image_for "$(env_cloud "$e")")"; write_kubeconfig "$e"; done
+    log "Kubeconfig in $KUBECONFIG_FILE"
+    ;;
+  nuke)
+    # The nuke script with its own arguments (nuke.sh CLOUD [--dry-run] ...),
+    # from the repository root, where nuke/<cloud>.yaml is.
+    exec "$(dirname "${BASH_SOURCE[0]}")/nuke.sh" "${NUKE_ARGS[@]}"
+    ;;
+  publish)
+    # The repository's charts and modules as OCI packages (scripts/oci),
+    # from the aws test image: --registries for the registries (the first
+    # is pushed to, the rest mirrored), --release for the bare version.
+    [ -n "$REGISTRIES" ] && [ -n "$RELEASE" ] || die "usage: test.sh publish --registries REG[,REG...] --release X.Y.Z"
+    pull "$(image_for aws)"
+    base_args aws agent
+    for v in GH_TOKEN GH_ACTOR SUPPLIER OCI_SIGN SIGSTORE_ID_TOKEN COSIGN_EXPERIMENTAL RETRY_ATTEMPTS RETRY_DELAY; do
+      if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
+    done
+    mkdir -p .infralib-test/oci-publish
+    docker run "${ARGS[@]}" -e "REGISTRIES=$REGISTRIES" -e "VERSION=$RELEASE" -e OUT=/conf/.infralib-test/oci-publish \
+      --entrypoint bash "$(image_for aws)" -c '/opt/infralib-test/scripts/oci/login.sh && /opt/infralib-test/scripts/oci/publish.sh'
+    log "manifest.json and the index zip are in .infralib-test/oci-publish"
+    ;;
   static)
     exec "$(dirname "${BASH_SOURCE[0]}")/static.sh" --root "$ROOT" "${MODULES[@]}"
     ;;

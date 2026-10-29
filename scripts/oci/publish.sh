@@ -14,6 +14,12 @@
 #   VERSION      bare semver of the release
 #   SUPPLIER     organisation for the SBOMs
 #   OUT          directory for manifest.json and the index zip (release assets)
+#   OCI_SIGN     "false" skips the cosign signatures of the index: keyless
+#                signing needs an OIDC token (GitHub Actions provides one, a
+#                GitLab job can through id_tokens as SIGSTORE_ID_TOKEN) and
+#                a way to Sigstore's services
+# Needs helm, oras, cosign (unless OCI_SIGN=false), python3, jq, zip and
+# rsync; login.sh next to this script does the registry logins.
 set -euo pipefail
 cd "${GITHUB_WORKSPACE:-.}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -153,15 +159,18 @@ cd "$stage"
 digest=$(retry oras push --artifact-type=application/vnd.entigo.agentpkg --format go-template --template '{{.digest}}' \
   "$PRIMARY/index:$VERSION" "index-$VERSION.zip:archive/zip")
 [ -n "$digest" ] || { echo "ERROR: no index digest" >&2; exit 1; }
-cosign sign --yes "$PRIMARY/index@$digest"
+sign() { [ "${OCI_SIGN:-true}" = false ] || cosign sign --yes "$@"; }
+sign "$PRIMARY/index@$digest"
 sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --format go-template --template '{{.digest}}' \
   "$PRIMARY/index:$VERSION" index-sbom.spdx.json:application/spdx+json)
-cosign sign --yes "$PRIMARY/index@$sbom"
+sign "$PRIMARY/index@$sbom"
 for m in "${MIRRORS[@]}"; do
   retry oras cp -r --no-tty "$PRIMARY/index:$VERSION" "$m/index:$VERSION" >/dev/null
   # Copy the signatures instead of re-signing, so the mirror is byte-identical.
-  retry oras cp "$PRIMARY/index:sha256-${digest#sha256:}.sig" "$m/index:sha256-${digest#sha256:}.sig"
-  retry oras cp "$PRIMARY/index:sha256-${sbom#sha256:}.sig" "$m/index:sha256-${sbom#sha256:}.sig"
+  if [ "${OCI_SIGN:-true}" != false ]; then
+    retry oras cp "$PRIMARY/index:sha256-${digest#sha256:}.sig" "$m/index:sha256-${digest#sha256:}.sig"
+    retry oras cp "$PRIMARY/index:sha256-${sbom#sha256:}.sig" "$m/index:sha256-${sbom#sha256:}.sig"
+  fi
 done
 
 cat <<SUMMARY

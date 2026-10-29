@@ -34,32 +34,7 @@ runs:
         REGISTRIES: ${{ inputs.registries }}
         GH_TOKEN: ${{ github.token }}
         GH_ACTOR: ${{ github.actor }}
-      run: |
-        set -euo pipefail
-        IFS=, read -r -a regs <<<"${REGISTRIES}"
-        for r in "${regs[@]}"; do
-          host=${r%%/*}
-          case "$host" in
-            ghcr.io)
-              echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
-              echo "$GH_TOKEN" | oras login ghcr.io -u "$GH_ACTOR" --password-stdin ;;
-            public.ecr.aws)
-              [ -n "${AWS_ACCESS_KEY_ID:-}" ] || { echo "::error::$r needs AWS credentials in the environment" >&2; exit 1; }
-              aws ecr-public get-login-password --region us-east-1 | helm registry login public.ecr.aws -u AWS --password-stdin
-              aws ecr-public get-login-password --region us-east-1 | oras login public.ecr.aws -u AWS --password-stdin
-              # ECR Public repositories must exist before a push; one per package.
-              prefix=${r#public.ecr.aws/*/}
-              existing=$(aws ecr-public describe-repositories --region us-east-1 --query 'repositories[].repositoryName' --output text | tr '\t' '\n')
-              needed=$(
-                for d in modules/k8s/*/; do [ -f "${d}Chart.yaml" ] && echo "${prefix}/k8s/$(basename "$d")"; done
-                for d in modules/*/*/; do t=$(basename "$(dirname "$d")"); [ "$t" != k8s ] && [ -f "${d}main.tf" ] && echo "${prefix}/${t}/$(basename "$d")"; done
-                echo "${prefix}/index")
-              comm -23 <(echo "$needed" | sort -u) <(echo "$existing" | sort -u) | while read -r repo; do
-                [ -n "$repo" ] && echo "Creating ECR Public repository $repo" && aws ecr-public create-repository --region us-east-1 --repository-name "$repo" >/dev/null
-              done ;;
-            *) echo "::error::no login method for registry host $host (ghcr.io and public.ecr.aws are supported)" >&2; exit 1 ;;
-          esac
-        done
+      run: ${{ github.action_path }}/../../../scripts/oci/login.sh
     - name: Publish
       id: publish
       shell: bash
@@ -68,4 +43,4 @@ runs:
         VERSION: ${{ inputs.version }}
         SUPPLIER: ${{ inputs.supplier }}
         OUT: ${{ inputs.out }}
-      run: ${{ github.action_path }}/publish.sh
+      run: ${{ github.action_path }}/../../../scripts/oci/publish.sh
