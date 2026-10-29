@@ -116,7 +116,10 @@ stop_config_recorders() {
 
 nuke_aws() {
   : "${AWS_REGION:?}"
-  local args=(run --config /home/aws-nuke/config.yml --force --max-wait-retries 100)
+  # The region of its own sessions, the region list and the global services
+  # included: aws-nuke would ask us-east-1 otherwise, which a network that
+  # reaches only its own region's endpoints cannot.
+  local args=(run --config /home/aws-nuke/config.yml --force --max-wait-retries 100 --default-region "$AWS_REGION")
   if [ -n "${ROLE_ARN:-}" ]; then
     args+=(--profile infralib-test)
   else
