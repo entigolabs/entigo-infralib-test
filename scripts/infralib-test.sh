@@ -31,6 +31,10 @@ commands:
              the image has the cloud's CLI and the kubectl credential plugin
              of its clusters, the repository is mounted at /conf, the working
              directory, and the environment's .env overrides are applied
+  report     the updates available to the repository's dependencies (Helm
+             charts, Crossplane providers, OpenTofu providers and modules),
+             scripts/report.sh per kind: the kinds given (k8s, aws, ...), else
+             every kind the repository has; GITHUB_TOKEN for vendored charts
   static     static checks of the given modules (all without arguments), no
              cloud needed: tflint for terraform modules, helm lint, helm
              template and kube-score for charts (scripts/static.sh)
@@ -148,7 +152,7 @@ NUKE_ARGS=()
 REGISTRIES=""
 RELEASE=""
 case "${1:-}" in
-  run|agent|test|generate|destroy|envs|shell|static|kubeconfig|publish) COMMAND=$1; shift ;;
+  run|agent|test|generate|destroy|envs|shell|static|kubeconfig|publish|report) COMMAND=$1; shift ;;
   nuke) COMMAND=nuke; shift; NUKE_ARGS=("$@"); set -- ;;
 esac
 while [ $# -gt 0 ]; do
@@ -650,6 +654,23 @@ case $COMMAND in
     docker run "${ARGS[@]}" -e "REGISTRIES=$REGISTRIES" -e "VERSION=$RELEASE" -e OUT=/conf/.infralib-test/oci-publish \
       --entrypoint bash "$(image_for aws)" -c '/opt/infralib-test/scripts/oci/login.sh && /opt/infralib-test/scripts/oci/publish.sh'
     log "manifest.json and the index zip are in .infralib-test/oci-publish"
+    ;;
+  report)
+    # The updates available to the repository's dependencies, scripts/report.sh
+    # from the aws test image (it has curl, jq, yq and helm), one kind at a
+    # time: the kinds given, else every kind the repository has. The cloud
+    # credentials reach the container for the repository's own report hooks.
+    pull "$(image_for aws)"
+    base_args aws agent
+    [ -n "${GITHUB_TOKEN:-}" ] && ARGS+=(-e GITHUB_TOKEN)
+    kinds=("${MODULES[@]}")
+    [ ${#kinds[@]} -gt 0 ] || mapfile -t kinds < <(docker run "${ARGS[@]}" --entrypoint /opt/infralib-test/scripts/report.sh "$(image_for aws)" --list-kinds)
+    [ ${#kinds[@]} -gt 0 ] || die "nothing to report on: no modules/<kind> directory or report/<kind>.sh"
+    for k in "${kinds[@]}"; do
+      log "Updates for $k"
+      docker run "${ARGS[@]}" --entrypoint /opt/infralib-test/scripts/report.sh "$(image_for aws)" "$k" || rc=1
+    done
+    exit "${rc:-0}"
     ;;
   static)
     exec "$(dirname "${BASH_SOURCE[0]}")/static.sh" --root "$ROOT" "${MODULES[@]}"
