@@ -6,7 +6,11 @@
 #   public.ecr.aws               AWS credentials (ECR Public, us-east-1);
 #                                repositories created, one per package
 #   *.dkr.ecr.<region>.amazonaws.com  AWS credentials; repositories created,
-#                                one per package, under the path after the host
+#                                one per package, under the path after the host;
+#                                with ECR_PULL_PRINCIPALS (comma separated IAM
+#                                ARNs) every package repository gets a policy
+#                                letting those principals pull, for a consumer
+#                                in another account
 # Run from the repository root, where modules/ is.
 set -euo pipefail
 IFS=, read -r -a regs <<<"${REGISTRIES:?}"
@@ -42,7 +46,16 @@ for r in "${regs[@]}"; do
       existing=$(aws ecr describe-repositories --region "$region" --query 'repositories[].repositoryName' --output text | tr '\t' '\n')
       comm -23 <(packages "$prefix" | sort -u) <(echo "$existing" | sort -u) | while read -r repo; do
         [ -n "$repo" ] && echo "Creating ECR repository $repo" && aws ecr create-repository --region "$region" --repository-name "$repo" >/dev/null
-      done ;;
+      done
+      if [ -n "${ECR_PULL_PRINCIPALS:-}" ]; then
+        policy=$(jq -nc --arg p "$ECR_PULL_PRINCIPALS" '{Version: "2012-10-17", Statement: [{Sid: "pull", Effect: "Allow",
+          Principal: {AWS: ($p | split(","))},
+          Action: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability", "ecr:DescribeImages", "ecr:ListImages"]}]}')
+        packages "$prefix" | sort -u | while read -r repo; do
+          echo "Pull policy on $repo for $ECR_PULL_PRINCIPALS"
+          aws ecr set-repository-policy --region "$region" --repository-name "$repo" --policy-text "$policy" >/dev/null
+        done
+      fi ;;
     *) echo "ERROR: no login method for registry host $host (ghcr.io, public.ecr.aws and private ECR are supported)" >&2; exit 1 ;;
   esac
 done

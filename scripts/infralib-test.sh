@@ -271,9 +271,18 @@ base_args() {
           ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials)
         fi
       else
-        for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE; do
+        for v in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_ROLE_ARN; do
           if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
         done
+        if [ -n "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+          # The pod's own identity, used as it is (ROLE_ARN unset: a publish
+          # to the pod's own account's registry, say). The token is copied
+          # under the repository, the one path a docker daemon running
+          # elsewhere (a dind service) sees too.
+          mkdir -p "$ROOT/.infralib-test"
+          cp "$AWS_WEB_IDENTITY_TOKEN_FILE" "$ROOT/.infralib-test/aws-web-token" && chmod 600 "$ROOT/.infralib-test/aws-web-token"
+          ARGS+=(-v "$ROOT/.infralib-test/aws-web-token:/creds/aws-web-token:ro" -e AWS_WEB_IDENTITY_TOKEN_FILE=/creds/aws-web-token)
+        fi
         if [ -d "$HOME/.aws" ]; then
           ARGS+=(-v "$HOME/.aws:/creds/aws:ro" -e AWS_SHARED_CREDENTIALS_FILE=/creds/aws/credentials -e AWS_CONFIG_FILE=/creds/aws/config)
         fi
@@ -405,16 +414,21 @@ generate() {
     [ "$IN_PLACE" = true ] && args+=(-in-place)
   fi
   log "Generating agent configurations for ${ENVS[*]}"
-  local line
+  # Captured, not piped: a generator that fails (an input in the wrong
+  # place, say) must fail the command, not leave it with no environments
+  # and a clean exit.
+  local line out
+  out=$(run_in cli -- infralib-test generate "${args[@]}") || die "generating the agent configurations failed"
   SELECTED=()
   while read -r line; do
+    [ -n "$line" ] || continue
     set -- $line
     case "$2" in
       skip) warn "Skipping $1: its steps list none of the requested modules" ;;
       *) steps=$2; [ "$steps" = all ] && [ -n "$ONLY_STEPS" ] && steps=$ONLY_STEPS
          declare -g "STEPS_${1//-/_}=$steps"; SELECTED+=("$1"); echo "    $1: steps $steps" >&2 ;;
     esac
-  done < <(run_in cli -- infralib-test generate "${args[@]}")
+  done <<<"$out"
   ENVS=("${SELECTED[@]}")
   show_configs
 }
@@ -626,7 +640,7 @@ case $COMMAND in
     [ -n "$REGISTRIES" ] && [ -n "$RELEASE" ] || die "usage: test.sh publish --registries REG[,REG...] --release X.Y.Z"
     pull "$(image_for aws)"
     base_args aws agent
-    for v in GH_TOKEN GH_ACTOR SUPPLIER OCI_SIGN SIGSTORE_ID_TOKEN COSIGN_EXPERIMENTAL RETRY_ATTEMPTS RETRY_DELAY; do
+    for v in GH_TOKEN GH_ACTOR SUPPLIER OCI_SIGN SIGSTORE_ID_TOKEN COSIGN_EXPERIMENTAL RETRY_ATTEMPTS RETRY_DELAY ECR_PULL_PRINCIPALS; do
       if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
     done
     mkdir -p .infralib-test/oci-publish
