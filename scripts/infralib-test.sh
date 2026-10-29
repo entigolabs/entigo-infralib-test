@@ -496,12 +496,16 @@ run_agent() (
   if [ "$QUIET" = true ]; then
     docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" >"logs/$e/agent-$sub.log" 2>&1
   else
-    # sed -u: unbuffered, so the live log in CI moves line by line instead of
-    # in 4 KB blocks (the apply phase is quiet enough to sit in a buffer).
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | sed -u "s/^/[$e] /"
+    # A read loop rather than sed: unbuffered, so the live log in CI moves
+    # line by line instead of in 4 KB blocks (the apply phase is quiet enough
+    # to sit in a buffer), and without GNU options, since the script also
+    # runs from the alpine images, whose sed is BusyBox.
+    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | prefix_lines "[$e] "
     return "${PIPESTATUS[0]}"
   fi
 )
+
+prefix_lines() { local line; while IFS= read -r line || [ -n "$line" ]; do printf '%s%s\n' "$1" "$line"; done; }
 
 # run_agents SUBCOMMAND: every selected environment in parallel. Each is
 # reported the moment it finishes, in whatever order that happens: each
