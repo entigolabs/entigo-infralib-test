@@ -102,10 +102,17 @@ func runCommand(args []string) error {
 	for _, m := range modules {
 		testDirs = append(testDirs, "./"+filepath.ToSlash(m.TestDir()))
 	}
-	if err := restorePrunedModules(config.Root(), testDirs); err != nil {
+	modfile, err := localModfile(config.Root(), wantedFrameworkVersion())
+	if err != nil {
+		return err
+	}
+	if err := restorePrunedModules(config.Root(), modfile, testDirs); err != nil {
 		return err
 	}
 	goArgs := []string{"test", "-json", "-count=1", "-timeout", timeout.String(), "-p", fmt.Sprint(*parallel)}
+	if modfile != "" {
+		goArgs = append(goArgs, "-modfile="+modfile)
+	}
 	if *runFilter != "" {
 		goArgs = append(goArgs, "-run", *runFilter)
 	}
@@ -392,6 +399,48 @@ func alignGoMod(root, want string) error {
 		}
 	}
 	return nil
+}
+
+// frameworkSource is where the images keep the framework's own source: the
+// version the image was built from.
+const frameworkSource = "/opt/infralib-test/src"
+
+// localModfile writes <root>/.infralib-test/go.mod, the repository's go.mod
+// with the framework replaced by the image's copy of its source, go.sum next
+// to it, and returns the file for go's -modfile flag. The framework module
+// is then never downloaded: a runner with no way to the Go proxy still
+// tests, and the image's warmed caches cover the rest. Empty when this
+// image carries no source or the repository requires another version than
+// the image's, where a download is the honest thing.
+func localModfile(root, want string) (string, error) {
+	if _, err := os.Stat(filepath.Join(frameworkSource, "go.mod")); err != nil {
+		return "", nil
+	}
+	have, err := frameworkRequire(root)
+	if err != nil || have != want {
+		return "", err
+	}
+	dir := filepath.Join(root, ".infralib-test")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	modfile := filepath.Join(dir, "go.mod")
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			return "", err
+		}
+	}
+	cmd := exec.Command("go", "mod", "edit", "-modfile", modfile, "-replace", frameworkModule+"="+frameworkSource)
+	cmd.Dir = root
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("go mod edit -replace: %w", err)
+	}
+	return modfile, nil
 }
 
 // frameworkRequire returns the version go.mod requires the framework at.

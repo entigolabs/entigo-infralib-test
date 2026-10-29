@@ -57,12 +57,16 @@ func readPrunedModules() ([]prunedModule, error) {
 // indexes a module cache directory once and trusts the index afterwards, so
 // `go list` still reports the pruned packages as present; the files on disk
 // are what counts.
-func restorePrunedModules(root string, dirs []string) error {
+func restorePrunedModules(root, modfile string, dirs []string) error {
 	pruned, err := readPrunedModules()
 	if err != nil || len(pruned) == 0 {
 		return err
 	}
-	args := append([]string{"list", "-e", "-deps", "-test", "-json=ImportPath,Dir,GoFiles"}, dirs...)
+	args := []string{"list", "-e", "-deps", "-test", "-json=ImportPath,Dir,GoFiles"}
+	if modfile != "" {
+		args = append(args, "-modfile="+modfile)
+	}
+	args = append(args, dirs...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	out, err := cmd.Output()

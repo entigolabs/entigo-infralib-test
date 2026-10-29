@@ -234,6 +234,9 @@ base_args() {
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
         -e INFRALIB_ROOT=/conf -e "INFRALIB_TEST_VERSION=$TAG" -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
   mkdir -p .infralib-test/plugin-cache
+  # Go's own proxy settings, for a network that has a module proxy of its own.
+  local v
+  for v in GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOFLAGS; do if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi; done
   # The kubeconfig the tests use: KUBECONFIG, else the one the kubeconfig
   # command wrote into the checkout, else the executor's own.
   local kubeconfig="${KUBECONFIG:-}"
