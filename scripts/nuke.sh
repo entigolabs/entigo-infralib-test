@@ -21,9 +21,11 @@
 #                                          AZURE_CLIENT_SECRET (a service principal; the image has no az CLI)
 # AWS_NUKE_IMAGE, GCP_NUKE_IMAGE, OCI_NUKE_IMAGE and AZURE_NUKE_IMAGE override the tool images;
 # NUKE_ATTEMPTS (default 2) runs the nuke again when it fails, since the first
-# pass often leaves dependents behind. --dry-run only lists what would go,
-# and skips the AWS preparation (stopping the config recorders, emptying the
-# buckets) that has no dry mode.
+# pass often leaves dependents behind. On AWS a successful pass is followed
+# by a short one over the CloudWatch log groups only: a deleted EKS cluster
+# recreates its log group while it shuts down. --dry-run only lists what
+# would go, and skips the AWS preparation (stopping the config recorders,
+# emptying the buckets) that has no dry mode.
 set -euo pipefail
 
 AWS_NUKE_IMAGE=${AWS_NUKE_IMAGE:-ghcr.io/ekristen/aws-nuke:v3.48.2}
@@ -133,6 +135,15 @@ nuke_aws() {
   fi
   [ "$DRY_RUN" = false ] && args+=(--no-dry-run)
   docker run --rm -e AWS_REGION "${AWS_ROLE_ARGS[@]}" -v "$CONFIG":/home/aws-nuke/config.yml:ro "$AWS_NUKE_IMAGE" "${args[@]}"
+  [ "$DRY_RUN" = false ] || return 0
+  # An EKS cluster's control plane keeps writing its logs while the cluster
+  # is deleted and recreates /aws/eks/<cluster>/cluster after the pass
+  # removed it, so the next environment's terraform finds the log group
+  # taken. A second pass over the log groups alone, once the clusters are
+  # gone, takes the stragglers; the same filters apply.
+  log "Second pass over the CloudWatch log groups the deleted clusters recreated"
+  sleep 60
+  docker run --rm -e AWS_REGION "${AWS_ROLE_ARGS[@]}" -v "$CONFIG":/home/aws-nuke/config.yml:ro "$AWS_NUKE_IMAGE" "${args[@]}" --include CloudWatchLogsLogGroup --quiet
 }
 
 # ---------------------------------------------------------------- google
