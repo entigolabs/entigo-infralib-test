@@ -19,10 +19,7 @@
 # The images build FROM entigolabs/entigo-infralib-<cloud>:latest, the agent
 # images published by entigo-infralib, so a new agent or tool version reaches
 # the test images on the next build here. Nothing cascades automatically yet;
-# re-run this workflow (workflow_dispatch) to pick a new base up. The azure
-# base exists only as :dev until entigo-infralib's Azure modules are merged,
-# so the azure image builds from that and may not fail the workflow; the
-# Release workflow releases without it when it is missing.
+# re-run this workflow (workflow_dispatch) to pick a new base up.
 name: Images
 
 on:
@@ -51,7 +48,6 @@ jobs:
           runner: ubuntu-latest
         - arch: arm64
           runner: ubuntu-24.04-arm
-    continue-on-error: ${{ matrix.cloud == 'azure' }}
     permissions:
       contents: read
     steps:
@@ -78,7 +74,7 @@ jobs:
         outputs: type=image,name=entigolabs/entigo-infralib-test-${{ matrix.cloud }},push-by-digest=true,name-canonical=true,push=true
         build-args: |
           VERSION=${{ github.sha }}
-          BASE_TAG=${{ matrix.cloud == 'azure' && 'dev' || 'latest' }}
+          BASE_TAG=latest
         provenance: mode=max
         sbom: true
         cache-from: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }}
@@ -112,7 +108,6 @@ jobs:
       fail-fast: false
       matrix:
         cloud: [cli, aws, google, oracle, azure]
-    continue-on-error: ${{ matrix.cloud == 'azure' }}
     permissions:
       contents: read
     steps:
