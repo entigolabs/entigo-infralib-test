@@ -36,18 +36,11 @@ jobs:
           echo "$wf for $GITHUB_SHA: $conclusion"
           [ "$conclusion" = success ] || { echo "::error::$wf has not succeeded for $GITHUB_SHA" >&2; exit 1; }
         done
-        images="cli aws google oracle"
+        images="cli aws google oracle azure"
         for name in $images; do
           docker manifest inspect "entigolabs/entigo-infralib-test-$name:$GITHUB_SHA" >/dev/null 2>&1 \
             || { echo "::error::entigolabs/entigo-infralib-test-$name:$GITHUB_SHA is not in the registry" >&2; exit 1; }
         done
-        # The azure image is optional while its base image is only published
-        # as a dev tag (see images.yaml): a release without it is a release.
-        if docker manifest inspect "entigolabs/entigo-infralib-test-azure:$GITHUB_SHA" >/dev/null 2>&1; then
-          images="$images azure"
-        else
-          echo "::notice::no entigolabs/entigo-infralib-test-azure:$GITHUB_SHA; releasing without the azure image"
-        fi
         echo "images=$images" >> "$GITHUB_OUTPUT"
 
     # The previous version is the highest vX.Y.Z git tag, not the latest GitHub
