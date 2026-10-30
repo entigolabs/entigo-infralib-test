@@ -82,10 +82,10 @@ RUN chmod -R a+rwX /usr/local/share/ca-certificates /etc/pki/ca-trust \
 # For a CI job that uses this image as its own and runs the orchestrator
 # from it (a GitLab job with docker-in-docker, say): the docker CLI, and what
 # the OCI publish needs beyond the base image (scripts/oci): zip, rsync,
-# curl, oras and cosign.
+# curl, oras and cosign. The base is Azure Linux, so tdnf, not apk.
 ARG ORAS_VERSION=1.3.0
 ARG COSIGN_VERSION=2.5.3
-RUN apk add --no-cache docker-cli zip rsync curl \
+RUN tdnf install -y docker-cli zip rsync curl && tdnf clean all \
     && case "$TARGETARCH" in amd64) arch=amd64 ;; arm64) arch=arm64 ;; *) echo "unsupported $TARGETARCH" && exit 1 ;; esac \
     && curl -sSfL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${arch}.tar.gz" | tar -xz -C /usr/local/bin oras \
     && curl -sSfL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${arch}" \
