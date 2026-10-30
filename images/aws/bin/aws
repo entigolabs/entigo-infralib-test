@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# The AWS CLI, with `eks get-token` answered from a short cache.
+#
+# kubectl runs the EKS credential plugin, `aws eks get-token`, on every
+# invocation, and the Python CLI costs about 1.7 CPU seconds each time. A
+# step's argocd-apps plan runs its applications in parallel, each with
+# several kubectl calls, so on a small runner twenty concurrent token calls
+# take over thirty seconds each, which is more than the preliminary check
+# inside `kubectl cp` allows (its `test -d` exec gives up after 30 s with
+# "context deadline exceeded"). A token is good for fifteen minutes, so one
+# fetch per ten minutes serves them all: the first caller fetches under a
+# lock, the others wait for the file and read it. Everything else goes to
+# the real CLI untouched.
+set -euo pipefail
+
+real=${INFRALIB_TEST_AWS_CLI:-/opt/venv/bin/aws}
+
+token=false
+case " $* " in *" eks "*) for arg in "$@"; do [ "$arg" = get-token ] && token=true; done ;; esac
+[ "$token" = true ] || exec "$real" "$@"
+
+dir=${INFRALIB_TEST_EKS_TOKEN_CACHE:-${TMPDIR:-/tmp}/infralib-test-eks-tokens}
+ttl=${INFRALIB_TEST_EKS_TOKEN_TTL:-600}
+# One entry per command line and credential identity; the token carries the
+# cluster and the role, both of which are in those.
+key=$(printf '%s\n' "$*" "${AWS_PROFILE:-}" "${AWS_CONFIG_FILE:-}" "${AWS_ACCESS_KEY_ID:-}" "${AWS_ROLE_ARN:-}" "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" | md5sum | cut -c1-32)
+file="$dir/$key.json"
+
+fresh() { [ -f "$file" ] && [ $(( $(date +%s) - $(stat -c %Y "$file") )) -lt "$ttl" ]; }
+
+if fresh; then cat "$file"; exit 0; fi
+mkdir -p "$dir" && chmod 700 "$dir"
+exec 9>"$dir/$key.lock"
+flock 9
+if fresh; then cat "$file"; exit 0; fi
+out=$("$real" "$@")
+tmp=$(mktemp "$dir/.$key.XXXXXX")
+printf '%s\n' "$out" > "$tmp" && mv -f "$tmp" "$file"
+printf '%s\n' "$out"
