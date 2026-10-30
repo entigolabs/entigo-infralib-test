@@ -110,7 +110,11 @@ jobs:
       timeout-minutes: 60
       run: |
         set -euo pipefail
-        .infralib-test/framework/scripts/report.sh "${{ matrix.kind }}" > report.txt
+        # The script exits 1 when a dependency could not be checked (a
+        # registry out of reach, a chart its repository does not have); the
+        # report is still complete and still goes out, then the job fails.
+        rc=0
+        .infralib-test/framework/scripts/report.sh "${{ matrix.kind }}" > report.txt || rc=$?
         count=$(grep -c . report.txt || true)
         # The report goes to the log and the job summary whether or not Slack
         # is configured, and says so when there is nothing to report.
@@ -120,19 +124,25 @@ jobs:
           echo "${{ matrix.kind }}: ${count} updates available"
           cat report.txt
         fi
+        [ "$rc" = 0 ] || echo "${{ matrix.kind }}: some dependencies could not be checked, see the lines above"
         {
           echo "## ${{ matrix.kind }}"
           if [ "$count" = 0 ]; then echo "Everything is current."; else echo '```'; cat report.txt; echo '```'; fi
+          [ "$rc" = 0 ] || echo "Some dependencies could not be checked."
         } >> "$GITHUB_STEP_SUMMARY"
         echo "count=$count" >> "$GITHUB_OUTPUT"
+        echo "incomplete=$([ "$rc" = 0 ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
         { echo "report<<REPORT_EOF"; cat report.txt; echo "REPORT_EOF"; } >> "$GITHUB_OUTPUT"
+        exit "$rc"
     - name: Slack message with the report
-      if: env.HAS_SLACK == 'true'
+      # Also after a report that could not check everything: the lines say
+      # what, and the job's failure says that it matters.
+      if: ${{ !cancelled() && env.HAS_SLACK == 'true' && steps.report.outputs.count != '' }}
       uses: rtCamp/action-slack-notify@v2
       env:
-        SLACK_COLOR: ${{ steps.report.outputs.count == '0' && 'good' || '#EBEB00' }}
+        SLACK_COLOR: ${{ steps.report.outputs.incomplete == 'true' && 'failure' || steps.report.outputs.count == '0' && 'good' || '#EBEB00' }}
         SLACK_MESSAGE: |
-          *${{ matrix.kind }}* of ${{ github.repository }}: ${{ steps.report.outputs.count == '0' && 'everything is current' || format('{0} updates available', steps.report.outputs.count) }}
+          *${{ matrix.kind }}* of ${{ github.repository }}: ${{ steps.report.outputs.incomplete == 'true' && 'some dependencies could not be checked' || steps.report.outputs.count == '0' && 'everything is current' || format('{0} updates available', steps.report.outputs.count) }}
           ${{ steps.report.outputs.report }}
         SLACK_USERNAME: ${{ secrets.SLACK_USERNAME }}
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -140,7 +150,7 @@ jobs:
         SLACK_FOOTER: ""
         MSG_MINIMAL: actions url,commit
     - name: Slack message about the failure
-      if: failure() && env.HAS_SLACK == 'true'
+      if: failure() && env.HAS_SLACK == 'true' && steps.report.outputs.count == ''
       uses: rtCamp/action-slack-notify@v2
       env:
         SLACK_COLOR: failure

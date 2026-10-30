@@ -12,11 +12,17 @@
 #   report.sh --list-kinds  the kinds this repository has, one per line
 #
 # One line per finding on stdout, "<name> newer version <latest>, current
-# <version> (<file>)", or a line saying what could not be checked; nothing when
-# everything is current. After its own checks the script runs the repository's
-# report/<kind>.sh, if there is one, for checks the framework knows nothing
-# about (entigo-infralib's EKS AMI release versions, say), and appends its
-# output. A kind that only has such a hook is a kind too.
+# <version> (<file>)", or a line saying what could not be checked and why:
+# "could not be reached" with the client's error when a registry did not
+# answer (a firewall between the runner and it, say), "not found" when it
+# answered without the dependency. Nothing when everything is current. After
+# its own checks the script runs the repository's report/<kind>.sh, if there
+# is one, for checks the framework knows nothing about (entigo-infralib's EKS
+# AMI release versions, say), and appends its output. A kind that only has
+# such a hook is a kind too. The exit status is 1 when any dependency could
+# not be checked, after the whole report has been printed, so that a report
+# which says nothing because it could reach nothing fails instead of passing
+# as "everything is current".
 #
 # Needs curl, jq and yq; helm for k8s. GITHUB_TOKEN, when set, authenticates
 # the GitHub API calls made for vendored charts. Run from the repository root
@@ -71,12 +77,45 @@ need curl; need jq
 semver3() { echo "$1" | sed 's/^v//' | cut -d. -f1-3; }
 
 # Highest X.Y.Z among the lines on stdin, prereleases and odd tags dropped.
-highest() { sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1; }
+highest() { { sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1; }
+
+# fetch URL [curl options]: the body on stdout; on a connection, TLS or HTTP
+# error, nothing, curl's own message kept for fetch_error and a non-zero
+# return. The lookups run in command substitutions and pipelines, so the
+# message and the failure count go through files, not variables.
+FAILED=$(mktemp)
+ERROR=$(mktemp)
+trap 'rm -f "$FAILED" "$ERROR"' EXIT
+fetch() {
+  local url=$1 err; shift
+  : > "$ERROR"
+  { err=$(curl -sS -m 60 --fail-with-body "$@" "$url" 2>&1 1>&3); } 3>&1 && return 0
+  echo "$err" | sed -E 's/^curl: \([0-9]+\) //' | grep -v '^[[:space:]]*$' | tail -1 > "$ERROR" || true
+  [ -s "$ERROR" ] || echo "curl failed" > "$ERROR"
+  return 1
+}
+fetch_error() { cat "$ERROR"; }
+
+# unreachable WHAT URL ERROR [FILE]: the report line for a registry that did
+# not answer, and the failure counted.
+unreachable() {
+  local where=""
+  [ -z "${4:-}" ] || where=" ($4)"
+  echo "$1 could not be reached at $2: $3$where"
+  echo 1 >> "$FAILED"
+}
+
+# not_found LINE: the report line for a dependency its registry does not
+# have, and the failure counted.
+not_found() {
+  echo "$1"
+  echo 1 >> "$FAILED"
+}
 
 github_api() {
-  local args=(-s -H "Accept: application/vnd.github+json")
+  local args=(-H "Accept: application/vnd.github+json")
   [ -z "${GITHUB_TOKEN:-}" ] || args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  curl "${args[@]}" "$1"
+  fetch "$1" "${args[@]}"
 }
 
 # ---------------------------------------------------------------- k8s ------
@@ -89,21 +128,26 @@ deprecated_module() {
 
 # Highest version tag of a chart in an OCI registry: anonymous pull token
 # where the registry hands one out, then the tags list with its pagination.
+# A registry that does not answer makes it return 1 with the error kept for
+# fetch_error; a registry without the chart gives an empty result.
 latest_oci_chart() {
   local name=$1 url=$2 ref host path token="" next tags="" response body
   ref="${url#oci://}/$name"
   host=${ref%%/*}
   path=${ref#*/}
   case "$host" in
-    ghcr.io) token=$(curl -s "https://ghcr.io/token?scope=repository:${path}:pull" | jq -r '.token // ""') ;;
+    ghcr.io) body=$(fetch "https://ghcr.io/token?scope=repository:${path}:pull") || return 1 ;;
     # ECR Public redirects the token endpoint without the trailing slash.
-    public.ecr.aws) token=$(curl -s "https://public.ecr.aws/token/?scope=repository:${path}:pull&service=public.ecr.aws" | jq -r '.token // ""') ;;
+    public.ecr.aws) body=$(fetch "https://public.ecr.aws/token/?scope=repository:${path}:pull&service=public.ecr.aws") || return 1 ;;
     docker.io|registry-1.docker.io) host=registry-1.docker.io
-      token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${path}:pull" | jq -r '.token // ""') ;;
+      body=$(fetch "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${path}:pull") || return 1 ;;
+    *) body="" ;;
   esac
+  token=$(echo "$body" | jq -r '.token // ""' 2>/dev/null || true)
   next="https://${host}/v2/${path}/tags/list?n=1000"
   while [ -n "$next" ]; do
-    response=$(curl -s -D - -H "Authorization: Bearer ${token}" "$next")
+    # A missing repository is a 404 and so an empty tag list, not an error.
+    response=$(fetch "$next" -D - -H "Authorization: Bearer ${token}") || { case "$(fetch_error)" in "The requested URL returned error: 404"*) break ;; *) return 1 ;; esac; }
     body=${response#*$'\r\n\r\n'}
     tags="$tags $(echo "$body" | jq -r '.tags[]?' 2>/dev/null || true)"
     next=$(echo "$response" | grep -i '^link:' | sed 's/.*<\(.*\)>.*/\1/' || true)
@@ -115,10 +159,17 @@ latest_oci_chart() {
 # Highest version in a classic chart repository. The repository is added
 # under a name derived from its URL, so two charts that share a dependency
 # name but not a repository do not fight over the alias.
+# A repository that does not answer makes it return 1 with helm's own error
+# kept for fetch_error; a repository without the chart gives an empty result.
 latest_repo_chart() {
-  local name=$1 url=$2 alias
+  local name=$1 url=$2 alias err
   alias="r$(echo -n "$url" | md5sum | cut -c1-10)"
-  helm repo add "$alias" "$url" --force-update >/dev/null 2>&1 || { echo ""; return; }
+  : > "$ERROR"
+  if ! err=$(helm repo add "$alias" "$url" --force-update 2>&1 >/dev/null); then
+    echo "$err" | sed -E 's/^Error: //' | grep -v '^[[:space:]]*$' | tail -1 > "$ERROR" || true
+    [ -s "$ERROR" ] || echo "helm repo add failed" > "$ERROR"
+    return 1
+  fi
   helm search repo -r "\v${alias}/${name}\v" --output json 2>/dev/null | jq -r '.[0].version // ""'
 }
 
@@ -129,21 +180,22 @@ report_k8s_charts() {
     while read -r name version url; do
       [ -n "$name" ] || continue
       case "$url" in
-        oci://*) latest=$(latest_oci_chart "$name" "$url") ;;
+        oci://*) latest=$(latest_oci_chart "$name" "$url") || { unreachable "$name chart registry" "$url" "$(fetch_error)" "$chart"; continue; } ;;
         file://*)
           # A vendored chart has no registry to ask, so the upstream
           # repository's releases are followed instead; which one is an
           # annotation on the module's own Chart.yaml.
           upstream=$(yq -r '.annotations."infralib.entigo.io/upstream-repo" // ""' "$chart")
           if [ -z "$upstream" ]; then
-            echo "$name is vendored from $url, but $chart has no infralib.entigo.io/upstream-repo annotation to check against"
+            not_found "$name is vendored from $url, but $chart has no infralib.entigo.io/upstream-repo annotation to check against"
             continue
           fi
-          latest=$(github_api "https://api.github.com/repos/$upstream/releases/latest" | jq -r '.tag_name // ""' | sed 's/^v//') ;;
-        *) latest=$(latest_repo_chart "$name" "$url") ;;
+          body=$(github_api "https://api.github.com/repos/$upstream/releases/latest") || { unreachable "$name upstream releases" "https://api.github.com/repos/$upstream/releases/latest" "$(fetch_error)" "$chart"; continue; }
+          latest=$(echo "$body" | jq -r '.tag_name // ""' 2>/dev/null | sed 's/^v//' || true) ;;
+        *) latest=$(latest_repo_chart "$name" "$url") || { unreachable "$name chart repository" "$url" "$(fetch_error)" "$chart"; continue; } ;;
       esac
       if [ -z "$latest" ] || [ "$latest" = null ]; then
-        echo "$name Chart not found in repo $url ($chart)"
+        not_found "$name chart not found in $url ($chart)"
       elif [ "$(semver3 "$latest")" != "$(semver3 "$version")" ]; then
         echo "$name newer version $latest, current $version ($chart)"
       fi
@@ -163,9 +215,10 @@ report_k8s_providers() {
       [ -n "$provider" ] || continue
       path=${provider%%:*}
       current=${provider#*:}
-      latest=$(curl -s "https://marketplace.upbound.io/providers/$path" | cut -d/ -f5)
+      body=$(fetch "https://marketplace.upbound.io/providers/$path") || { unreachable "$path crossplane provider package" "https://marketplace.upbound.io/providers/$path" "$(fetch_error)" "$file"; continue; }
+      latest=$(echo "$body" | cut -d/ -f5)
       if [ -z "$latest" ]; then
-        echo "$path crossplane provider package latest version https://marketplace.upbound.io/providers/$path not found"
+        not_found "$path crossplane provider package latest version https://marketplace.upbound.io/providers/$path not found ($file)"
       elif [ "$current" != "$latest" ]; then
         echo "$path newer version $latest, current $current ($file)"
       fi
@@ -216,16 +269,18 @@ report_tofu() {
     name=${source%%//*}
     case "$name" in
       */*/*)
-        latest=$(curl -s "https://registry.opentofu.org/v1/modules/$name/versions" | jq -r '.modules[0].versions[]?.version' 2>/dev/null | highest || true)
+        body=$(fetch "https://registry.opentofu.org/v1/modules/$name/versions") || { unreachable "$name module" "https://registry.opentofu.org/v1/modules/$name/versions" "$(fetch_error)"; continue; }
+        latest=$(echo "$body" | jq -r '.modules[0].versions[]?.version' 2>/dev/null | highest || true)
         if [ -z "$latest" ]; then
-          echo "$name module not found in https://registry.opentofu.org/v1/modules/$name/versions"
+          not_found "$name module not found in https://registry.opentofu.org/v1/modules/$name/versions"
         elif [ "$current" != "$latest" ]; then
           echo "$name newer version $latest, current $current"
         fi ;;
       */*)
-        latest=$(curl -s "https://registry.opentofu.org/v1/providers/$name/versions" | jq -r '.versions[]?.version' 2>/dev/null | highest || true)
+        body=$(fetch "https://registry.opentofu.org/v1/providers/$name/versions") || { unreachable "$name provider" "https://registry.opentofu.org/v1/providers/$name/versions" "$(fetch_error)"; continue; }
+        latest=$(echo "$body" | jq -r '.versions[]?.version' 2>/dev/null | highest || true)
         if [ -z "$latest" ]; then
-          echo "$name provider not found in https://registry.opentofu.org/v1/providers/$name/versions"
+          not_found "$name provider not found in https://registry.opentofu.org/v1/providers/$name/versions"
         elif [ "$current" != "$latest" ]; then
           echo "$name newer version $latest, current $current"
         fi ;;
@@ -242,3 +297,6 @@ esac
 if [ -f "report/$KIND.sh" ]; then
   bash "report/$KIND.sh"
 fi
+
+# Everything is printed; now the verdict on what could not be checked.
+[ ! -s "$FAILED" ] || exit 1
