@@ -20,10 +20,13 @@
 #   azure   taivox/azure-nuke              AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID,
 #                                          AZURE_CLIENT_SECRET (a service principal; the image has no az CLI)
 # AWS_NUKE_IMAGE, GCP_NUKE_IMAGE, OCI_NUKE_IMAGE and AZURE_NUKE_IMAGE override the tool images;
-# NUKE_ATTEMPTS (default 2) runs the nuke again when it fails, since the first
-# pass often leaves dependents behind. --dry-run only lists what would go,
-# and skips the AWS preparation (stopping the config recorders, emptying the
-# buckets) that has no dry mode.
+# A nuke is two full passes: what the first pass deleted can come back
+# before it ends (a deleted EKS cluster writes its last control plane logs
+# and recreates its CloudWatch log group), and the second pass takes it.
+# NUKE_ATTEMPTS (default 2) runs a pass again when it fails, since a pass
+# often leaves dependents behind. --dry-run is one pass that only lists what
+# would go, and skips the AWS preparation (stopping the config recorders,
+# emptying the buckets) that has no dry mode.
 set -euo pipefail
 
 AWS_NUKE_IMAGE=${AWS_NUKE_IMAGE:-ghcr.io/ekristen/aws-nuke:v3.48.2}
@@ -195,14 +198,21 @@ nuke_azure() {
   return $rc
 }
 
-attempt=1
+passes=2
+[ "$DRY_RUN" = false ] || passes=1
+pass=1
 while :; do
-  log "Nuking $CLOUD with $CONFIG (attempt $attempt of $NUKE_ATTEMPTS)"
-  if "nuke_$CLOUD"; then
-    log "Nuke of $CLOUD done"
-    exit 0
-  fi
-  [ $attempt -lt "$NUKE_ATTEMPTS" ] || die "nuke of $CLOUD failed"
-  attempt=$((attempt + 1))
-  warn "nuke of $CLOUD failed, running it again"
+  attempt=1
+  while :; do
+    log "Nuking $CLOUD with $CONFIG (pass $pass of $passes, attempt $attempt of $NUKE_ATTEMPTS)"
+    "nuke_$CLOUD" && break
+    [ $attempt -lt "$NUKE_ATTEMPTS" ] || die "nuke of $CLOUD failed"
+    attempt=$((attempt + 1))
+    warn "nuke of $CLOUD failed, running it again"
+  done
+  [ $pass -lt $passes ] || break
+  pass=$((pass + 1))
+  # A moment for what the first pass set in motion to finish.
+  sleep 60
 done
+log "Nuke of $CLOUD done"
