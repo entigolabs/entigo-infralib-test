@@ -41,6 +41,12 @@ RUN wget --no-verbose -O go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${TARGE
     && tar -C /usr/local -xzf go.tgz && rm go.tgz \
     && rm -rf /usr/local/go/test /usr/local/go/doc /usr/local/go/misc
 COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
+# The AWS CLI with a cache for `eks get-token`, first on PATH: kubectl runs
+# the plugin on every call and the Python CLI costs 1.7 CPU seconds each,
+# which starves a step's parallel argocd-apps plan on a small runner (see
+# the script). The real CLI stays where it is, at /opt/venv/bin/aws.
+COPY images/aws/bin/aws /opt/infralib-test/bin/aws
+ENV PATH=/opt/infralib-test/bin:$PATH
 # Only the Go sources feed the cache warming, so a change to scripts or docs
 # does not recompile everything.
 COPY go.mod go.sum /opt/infralib-test/src/
