@@ -18,8 +18,10 @@
 #
 # The images build FROM entigolabs/entigo-infralib-<cloud>:latest, the agent
 # images published by entigo-infralib, so a new agent or tool version reaches
-# the test images on the next build here. Nothing cascades automatically yet;
-# re-run this workflow (workflow_dispatch) to pick a new base up.
+# the test images on the next build here. Nothing cascades automatically yet.
+# A dispatch of this workflow rebuilds the <sha> images of main, but the
+# Release workflow refuses a commit that is released already, so a new base
+# is picked up and released with a commit on main, such as this note.
 name: Images
 
 on:
