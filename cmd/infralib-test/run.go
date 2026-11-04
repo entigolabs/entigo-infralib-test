@@ -87,7 +87,13 @@ func runCommand(args []string) error {
 		return fmt.Errorf("%s has no go.mod; module tests need one that requires %s", config.Root(), frameworkModule)
 	}
 	if !*noAlign {
-		if err := alignGoMod(config.Root(), wantedFrameworkVersion()); err != nil {
+		// The orchestrator runs one test container per cloud at the same
+		// time, all in this checkout: the first to take the lock aligns
+		// go.mod, the others then find it aligned and leave it alone.
+		err := withFileLock(filepath.Join(config.Root(), ".infralib-test", "align.lock"), func() error {
+			return alignGoMod(config.Root(), wantedFrameworkVersion())
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -105,6 +111,9 @@ func runCommand(args []string) error {
 	modfile, err := localModfile(config.Root(), wantedFrameworkVersion())
 	if err != nil {
 		return err
+	}
+	if modfile != "" {
+		defer os.RemoveAll(filepath.Dir(modfile))
 	}
 	if err := restorePrunedModules(config.Root(), modfile, testDirs); err != nil {
 		return err
@@ -405,13 +414,15 @@ func alignGoMod(root, want string) error {
 // version the image was built from.
 const frameworkSource = "/opt/infralib-test/src"
 
-// localModfile writes <root>/.infralib-test/go.mod, the repository's go.mod
-// with the framework replaced by the image's copy of its source, go.sum next
-// to it, and returns the file for go's -modfile flag. The framework module
-// is then never downloaded: a runner with no way to the Go proxy still
-// tests, and the image's warmed caches cover the rest. Empty when this
-// image carries no source or the repository requires another version than
-// the image's, where a download is the honest thing.
+// localModfile writes <root>/.infralib-test/modfile-*/go.mod, the
+// repository's go.mod with the framework replaced by the image's copy of its
+// source, go.sum next to it, and returns the file for go's -modfile flag.
+// The framework module is then never downloaded: a runner with no way to the
+// Go proxy still tests, and the image's warmed caches cover the rest. Empty
+// when this image carries no source or the repository requires another
+// version than the image's, where a download is the honest thing. The
+// directory is this run's own, since the test containers of several clouds
+// share the checkout, and the caller removes it when the run is over.
 func localModfile(root, want string) (string, error) {
 	if _, err := os.Stat(filepath.Join(frameworkSource, "go.mod")); err != nil {
 		return "", nil
@@ -420,8 +431,11 @@ func localModfile(root, want string) (string, error) {
 	if err != nil || have != want {
 		return "", err
 	}
-	dir := filepath.Join(root, ".infralib-test")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".infralib-test"), 0o755); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(filepath.Join(root, ".infralib-test"), "modfile-")
+	if err != nil {
 		return "", err
 	}
 	modfile := filepath.Join(dir, "go.mod")

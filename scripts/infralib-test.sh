@@ -528,36 +528,57 @@ run_agent() (
 
 prefix_lines() { local line; while IFS= read -r line || [ -n "$line" ]; do printf '%s%s\n' "$1" "$line"; done; }
 
-# run_agents SUBCOMMAND: every selected environment in parallel. Each is
-# reported the moment it finishes, in whatever order that happens: each
-# background run leaves its exit status in logs/<env>/agent-<sub>.rc, and
-# the loop below watches those files rather than waiting on the processes
-# one by one, which would hold a finished environment's line until every
-# environment started before it was done too.
-run_agents() {
-  local sub=$1 e pids=() names=() failed=()
-  for e in "${ENVS[@]}"; do
-    pull "$(agent_image "$(env_cloud "$e")")"
-    mkdir -p "logs/$e"; rm -f "logs/$e/agent-$sub.rc"
-    ( if run_agent "$sub" "$e"; then rc=0; else rc=$?; fi; echo "$rc" > "logs/$e/agent-$sub.rc"; exit "$rc" ) &
-    pids+=($!); names+=("$e")
-  done
-  local i remaining=${#pids[@]}
+# ---------------------------------------------------------------- background jobs
+# The agents run once per environment and the tests once per cloud, all at
+# the same time. start_job puts one such run in the background, leaving its
+# exit status in a file; wait_jobs reports each the moment it finishes, in
+# whatever order that happens: it watches those files rather than waiting on
+# the processes one by one, which would hold a finished job's line until
+# every job started before it was done too.
+JOB_PIDS=(); JOB_NAMES=(); JOB_RCS=(); JOB_FAILED=()
+
+# start_job NAME RC_FILE command...: the command in the background, its exit
+# status written to RC_FILE when it ends.
+start_job() {
+  local name=$1 rc_file=$2; shift 2
+  rm -f "$rc_file"
+  ( if "$@"; then rc=0; else rc=$?; fi; echo "$rc" > "$rc_file"; exit "$rc" ) &
+  JOB_PIDS+=($!); JOB_NAMES+=("$name"); JOB_RCS+=("$rc_file")
+}
+
+# wait_jobs LABEL: waits for every job start_job began, logging "LABEL NAME
+# done" for each that succeeded, and leaves the names of the others in
+# JOB_FAILED.
+wait_jobs() {
+  local label=$1 i remaining=${#JOB_PIDS[@]}
+  JOB_FAILED=()
   while [ "$remaining" -gt 0 ]; do
-    for i in "${!pids[@]}"; do
-      [ -n "${pids[$i]}" ] && [ -f "logs/${names[$i]}/agent-$sub.rc" ] || continue
-      wait "${pids[$i]}" || true
-      if [ "$(cat "logs/${names[$i]}/agent-$sub.rc")" = 0 ]; then
-        log "Agent $sub for ${names[$i]} done"
+    for i in "${!JOB_PIDS[@]}"; do
+      [ -n "${JOB_PIDS[$i]}" ] && [ -f "${JOB_RCS[$i]}" ] || continue
+      wait "${JOB_PIDS[$i]}" || true
+      if [ "$(cat "${JOB_RCS[$i]}")" = 0 ]; then
+        log "$label ${JOB_NAMES[$i]} done"
       else
-        failed+=("${names[$i]}")
+        JOB_FAILED+=("${JOB_NAMES[$i]}")
       fi
-      pids[$i]=""; remaining=$((remaining - 1))
+      JOB_PIDS[$i]=""; remaining=$((remaining - 1))
     done
     [ "$remaining" -gt 0 ] && sleep 1
   done
-  if [ ${#failed[@]} -gt 0 ]; then
-    for e in "${failed[@]}"; do
+  JOB_PIDS=(); JOB_NAMES=(); JOB_RCS=()
+}
+
+# run_agents SUBCOMMAND: every selected environment in parallel.
+run_agents() {
+  local sub=$1 e
+  for e in "${ENVS[@]}"; do
+    pull "$(agent_image "$(env_cloud "$e")")"
+    mkdir -p "logs/$e"
+    start_job "$e" "logs/$e/agent-$sub.rc" run_agent "$sub" "$e"
+  done
+  wait_jobs "Agent $sub for"
+  if [ ${#JOB_FAILED[@]} -gt 0 ]; then
+    for e in "${JOB_FAILED[@]}"; do
       if [ -f "logs/$e/agent-$sub.log" ]; then
         warn "Agent $sub for $e failed, last lines of logs/$e/agent-$sub.log:"
         tail -n 40 "logs/$e/agent-$sub.log" >&2 || true
@@ -565,24 +586,47 @@ run_agents() {
         warn "Agent $sub for $e failed before the agent container started (no logs/$e/agent-$sub.log); see the messages above"
       fi
     done
-    die "agent $sub failed for ${failed[*]}"
+    die "agent $sub failed for ${JOB_FAILED[*]}"
   fi
 }
 
 # ---------------------------------------------------------------- tests
+# run_tests_on CLOUD PREFIX: infralib-test run in the cloud's test image for
+# the selected environments of that cloud. The full per-module logs go to
+# logs/<cloud>/ and the command's own output to logs/<cloud>/tests.log, so
+# two clouds testing the same module at the same time never write the same
+# file. The body is a subshell so base_args' ARGS stay with this cloud.
+run_tests_on() (
+  local cloud=$1 prefix=$2 e
+  local args=(-timeout "$TIMEOUT" -log-dir "/conf/logs/$cloud")
+  [ -n "$RUN_FILTER" ] && args+=(-run "$RUN_FILTER")
+  [ "$VERBOSE" = true ] && args+=(-verbose)
+  for e in "${ENVS[@]}"; do [ "$(env_cloud "$e")" = "$cloud" ] && args+=(-env "$e"); done
+  run_in "$cloud" -- infralib-test run "${args[@]}" "${MODULES[@]}" 2>&1 | tee "logs/$cloud/tests.log" | prefix_lines "$prefix"
+  return "${PIPESTATUS[0]}"
+)
+
+# run_tests: the module tests of every selected cloud at once, one container
+# per cloud image, the way the agents run one per environment. The
+# environments of one cloud are parallel subtests inside its container. With
+# several clouds every line is prefixed with its cloud, as the agents' are
+# with their environment; the test containers share the checkout, and what
+# they must not do at once (align go.mod) the run command serialises itself.
 run_tests() {
-  local cloud rc=0
-  for cloud in $(clouds_of_selected); do
-    local args=(-timeout "$TIMEOUT" -log-dir /conf/logs)
-    [ -n "$RUN_FILTER" ] && args+=(-run "$RUN_FILTER")
-    [ "$VERBOSE" = true ] && args+=(-verbose)
-    local e
-    for e in "${ENVS[@]}"; do [ "$(env_cloud "$e")" = "$cloud" ] && args+=(-env "$e"); done
-    pull "$(image_for "$cloud")"
+  local clouds=() cloud prefix
+  mapfile -t clouds < <(clouds_of_selected)
+  for cloud in "${clouds[@]}"; do pull "$(image_for "$cloud")"; done
+  for cloud in "${clouds[@]}"; do
+    prefix=""; [ ${#clouds[@]} -gt 1 ] && prefix="[$cloud] "
+    mkdir -p "logs/$cloud"
     log "Running module tests on $cloud"
-    run_in "$cloud" -- infralib-test run "${args[@]}" "${MODULES[@]}" || rc=$?
+    start_job "$cloud" "logs/$cloud/tests.rc" run_tests_on "$cloud" "$prefix"
   done
-  return $rc
+  wait_jobs "Module tests on"
+  if [ ${#JOB_FAILED[@]} -gt 0 ]; then
+    for cloud in "${JOB_FAILED[@]}"; do warn "Module tests on $cloud failed, see logs/$cloud/"; done
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------- kubeconfig

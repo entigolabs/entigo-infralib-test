@@ -147,7 +147,7 @@ Tests never hold cloud account ids, cluster names or hostnames: the cluster is d
 
 **Running against one environment.** `./test.sh test --env aws_biz` (or `INFRALIB_ENVIRONMENTS=aws_biz` for a bare `go test`) selects the environments; `env.Run` and `env.RunEach` run only those and skip the test when none is selected. Subtests are named after the environment, so `go test -run 'TestRoute/aws_biz'` works as well.
 
-Parallelism, from the outside in: the orchestrator runs the agent for every environment at once; `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 8: the tests mostly wait on the cloud, so more than the runner has cores); within a module, `env.Run` and `env.RunEach` run the environments as parallel subtests. Environments of different clouds run in different containers, one per cloud image.
+Parallelism, from the outside in: the orchestrator runs the agent for every environment at once, then the tests for every cloud at once, one container per cloud image (its lines prefixed with the cloud when there are several, as the agents' are with their environment); inside a container `infralib-test run` lets `go test` run several modules' test packages at once (`-parallel`, default 8: the tests mostly wait on the cloud, so more than the runner has cores); within a module, `env.Run` and `env.RunEach` run the environments of that cloud as parallel subtests.
 
 ## Running
 
@@ -170,7 +170,7 @@ modules/k8s/hello-world/test.sh        the same, from the module's directory (te
 2. selects the environments: the ones given with `--env`, otherwise every environment whose cloud has credentials and region settings in the shell,
 3. writes `agents/<env>/config.yaml` with `infralib-test generate`,
 4. runs `ei-agent run --pipeline-type=local` once per environment in parallel from the per-cloud image, with the checkout mounted at `/conf` as the repository's own source,
-5. runs `infralib-test run`, which executes `go test -json` for the selected modules and prints one line per test, a failed test's full output, and a summary; full logs go to `logs/`.
+5. runs `infralib-test run` once per cloud, all at the same time, which executes `go test -json` for the selected modules and prints one line per test, a failed test's full output, and a summary; full logs go to `logs/<cloud>/`.
 
 With module arguments each module is applied in a step named `<step-prefix>-<module>` (prefix from user and branch, `main` on the main branch in CI), a k8s module under a branch-prefixed application name, so a branch never touches the shared installation. The prefix is four characters of the user and seven of the branch, so two branches whose names share their first seven characters share a step; name branches apart in their first word. `--in-place` applies the modules under their regular names instead, the post-merge use: a k8s module still gets a step of its own, named the same way, so that the other modules of its regular step are left as they are; a terraform module runs inside its regular step, together with the other modules of that step, since a second step would be a second state. The regular steps stay in the generated config in both cases, unapplied, so every template reference resolves. `test/module.yaml` with `pin_step: true` makes a module behave in place in pull requests too.
 
@@ -186,7 +186,7 @@ A GitLab job runs the orchestrator from the per-cloud test image itself, which c
 
 ## One version pin
 
-`INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. `infralib-test run` aligns the repository's `go.mod` to that tag before testing (or, for `dev`, `main` and `<sha>` images, to the commit baked into the image, see `infralib-test version`), with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
+`INFRALIB_TEST_VERSION` in a repository's `test.sh` is the only framework pin. `infralib-test run` aligns the repository's `go.mod` to that tag before testing (or, for `dev`, `main` and `<sha>` images, to the commit baked into the image, see `infralib-test version`), with `go mod edit -require` and `go mod tidy`, so tests compile against the framework in the image and the image's warmed Go cache always matches. The change lands in the working tree: after bumping `test.sh`, run the tests once and commit `go.mod` and `go.sum` with it. The test containers of several clouds share the checkout, so the alignment runs under a file lock (`.infralib-test/align.lock`): the first container aligns, the rest find go.mod aligned. The pull-request workflow fails when that commit is missing. `go.mod` and `go.sum` stay in the repository for editors, `go vet` and scanners. `-no-align` turns the alignment off.
 
 ## Images
 
