@@ -3,6 +3,11 @@ kind: Job
 metadata:
   name: health-check
 spec:
+  # A test that gives up on the probe leaves the Job behind; nothing has to
+  # outlive two hours of looping, and a finished Job is kept that long for
+  # its logs and then removed.
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 7200
   template:
     metadata:
       labels:
@@ -22,6 +27,15 @@ spec:
             capabilities:
               drop:
                 - ALL
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 20Mi
+            requests:
+              cpu: 5m
+              memory: 16Mi
+              ephemeral-storage: 2Mi
           command: ["/bin/sh", "-c"]
           args:
             - |
