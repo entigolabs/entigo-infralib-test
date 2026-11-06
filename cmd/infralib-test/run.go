@@ -32,6 +32,14 @@ type testState struct {
 	// parent is true once a subtest of this test was seen; the parent's own
 	// pass/fail then only repeats its children's and is not reported.
 	parent bool
+	// pending is true from the run event until the start line is printed or
+	// a subtest appears. The line waits for the first sign the body is
+	// running (a "=== CONT" resume, output or the result), so a parent that
+	// only spawns subtests and a parallel subtest go test has paused are not
+	// announced too early.
+	pending bool
+	// announced is true once the start line was printed.
+	announced bool
 }
 
 type packageState struct {
@@ -198,8 +206,9 @@ type summary struct {
 	failures                        []string
 }
 
-// format consumes go test -json events, prints one line per finished test and
-// a failed test's output, and writes everything to a log file per package.
+// format consumes go test -json events, prints one line per started and one
+// per finished test and a failed test's output, and writes everything to a log
+// file per package.
 func format(r io.Reader, config *env.Config, logDir string, verbose bool) summary {
 	var s summary
 	packages := map[string]*packageState{}
@@ -267,29 +276,50 @@ func format(r io.Reader, config *env.Config, logDir string, verbose bool) summar
 		if i := strings.LastIndex(event.Test, "/"); i > 0 {
 			if parent, ok := p.tests[event.Test[:i]]; ok {
 				parent.parent = true
+				parent.pending = false
 			}
 		}
 		if state.parent && (event.Action == "pass" || event.Action == "fail") {
+			// A parent announced before its subtests appeared (a parallel
+			// subtest with subtests of its own) gets its finish line so the
+			// start is not left open; the counts are its children's.
+			if state.announced {
+				mark := "✓"
+				if event.Action == "fail" {
+					mark = "✗"
+				}
+				fmt.Printf("%s %s %s (%s)\n", mark, p.display, event.Test, duration(event.Elapsed))
+			}
 			continue
+		}
+		announce := func() {
+			if state.pending {
+				state.pending = false
+				state.announced = true
+				fmt.Printf("~ %s %s\n", p.display, event.Test)
+			}
 		}
 		switch event.Action {
 		case "run":
 			state.started = event.Time
-			if verbose {
-				fmt.Printf("▶ %s %s\n", p.display, event.Test)
-			}
+			state.pending = true
 		case "output":
 			state.output = append(state.output, event.Output)
+			if isResume(event.Output) || !isTestMarker(event.Output) {
+				announce()
+			}
 			if verbose {
 				fmt.Print(event.Output)
 			}
 		case "pass":
+			announce()
 			s.passed++
 			fmt.Printf("✓ %s %s (%s)\n", p.display, event.Test, duration(event.Elapsed))
 		case "skip":
 			s.skipped++
 			fmt.Printf("- %s %s skipped%s\n", p.display, event.Test, skipReason(state.output))
 		case "fail":
+			announce()
 			s.failed++
 			s.failures = append(s.failures, p.display+" "+event.Test)
 			fmt.Printf("✗ %s %s (%s)\n", p.display, event.Test, duration(event.Elapsed))
@@ -304,6 +334,20 @@ func format(r io.Reader, config *env.Config, logDir string, verbose bool) summar
 		}
 	}
 	return s
+}
+
+// isTestMarker reports whether an output line is one of go test's own
+// "=== RUN", "=== PAUSE", "=== CONT" or "--- PASS" lines rather than output
+// of the test body.
+func isTestMarker(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "" || strings.HasPrefix(trimmed, "=== ") || strings.HasPrefix(trimmed, "--- ")
+}
+
+// isResume reports whether an output line is the "=== CONT" go test prints
+// when a paused parallel test starts running.
+func isResume(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "=== CONT")
 }
 
 func printIndented(lines []string) {
