@@ -59,6 +59,7 @@ func runCommand(args []string) error {
 	timeout := fs.Duration("timeout", 45*time.Minute, "go test timeout per package")
 	logDir := fs.String("log-dir", "", "directory for full per-module logs (default <root>/logs)")
 	parallel := fs.Int("parallel", 8, "packages compiled and run in parallel (go test -p); the tests mostly wait on the cloud, so more than the runner has cores")
+	parallelTests := fs.Int("parallel-tests", 32, "parallel subtests run at once within a package (go test -parallel); its default is the runner's core count, which serialises the suites' t.Parallel checks")
 	runFilter := fs.String("run", "", "regular expression passed to go test -run")
 	verbose := fs.Bool("verbose", false, "stream every test's output instead of only failures")
 	noAlign := fs.Bool("no-align", false, "do not align go.mod's framework version to this image's version")
@@ -126,7 +127,7 @@ func runCommand(args []string) error {
 	if err := restorePrunedModules(config.Root(), modfile, testDirs); err != nil {
 		return err
 	}
-	goArgs := []string{"test", "-json", "-count=1", "-timeout", timeout.String(), "-p", fmt.Sprint(*parallel)}
+	goArgs := []string{"test", "-json", "-count=1", "-timeout", timeout.String(), "-p", fmt.Sprint(*parallel), "-parallel", fmt.Sprint(*parallelTests)}
 	if modfile != "" {
 		goArgs = append(goArgs, "-modfile="+modfile)
 	}
