@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      go-dependencies:
+        # All Go dependencies in one weekly pull request, so CI runs once per week
+        # instead of once per dependency.
+        patterns:
+          - "*"
