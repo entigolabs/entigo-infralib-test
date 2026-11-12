@@ -14,6 +14,15 @@
 #   VERSION      bare semver of the release
 #   SUPPLIER     organisation for the SBOMs
 #   OUT          directory for manifest.json and the index zip (release assets)
+#   OCI_IMAGES   optional JSON array of the container images that belong to
+#                the release, written to manifest.json as "images" so that the
+#                signed index pins them by digest the way it pins the
+#                packages. The script pushes, tags and signs no image; the
+#                caller does, and says what it released:
+#                  [{"name": "<image>", "registries": {"<label>": {
+#                     "repository": "<registry>/<image>", "digest": "sha256:...",
+#                     "sbom": {"linux/amd64": "sha256:...", ...}}}}]
+#                sbom is optional. An entry without a tag gets v<VERSION>.
 #   OCI_SIGN     "false" skips the cosign signatures of the index: keyless
 #                signing needs an OIDC token (GitHub Actions provides one, a
 #                GitLab job can through id_tokens as SIGSTORE_ID_TOKEN) and
@@ -32,6 +41,20 @@ MIRRORS=("${ALL[@]:1}")
 export SBOM_REGISTRY="$PRIMARY" SBOM_SUPPLIER="${SUPPLIER:-Entigolabs}"
 WORK=$(mktemp -d)
 mkdir -p "$WORK/entries" "$WORK/charts" "$OUT"
+
+# Checked before anything is pushed: a malformed list must not surface after
+# every package is already published.
+IMAGES_JSON=$(jq -c --arg tag "v$VERSION" '
+  def digest: type == "string" and test("^sha256:[0-9a-f]{64}$");
+  if type != "array" then error("not an array") else . end
+  | map(
+      if (.name | type) != "string" or (.name | length) == 0 then error("an image has no name") else . end
+      | if (.registries | type) != "object" or (.registries | length) == 0 then error("image \(.name) has no registries") else . end
+      | if all(.registries[]; (.repository | type) == "string" and (.digest | digest)
+                              and ((.sbom // {}) | type == "object" and all(.[]; digest)))
+        then . else error("image \(.name): every registry needs a repository and sha256 digests") end
+      | {name, tag: (.tag // $tag), registries: (.registries | map_values({repository, digest} + (if .sbom then {sbom} else {} end)))}
+    )' <<<"${OCI_IMAGES:-[]}") || { echo "ERROR: OCI_IMAGES is not a valid image list" >&2; exit 1; }
 
 # label HOST -> short name used as key in manifest.json (ghcr, ecr, or the host)
 label() {
@@ -150,7 +173,11 @@ done
 stage=$(mktemp -d)
 tree=(modules); [ -d providers ] && tree+=(providers)
 rsync -a --exclude 'charts/' --exclude 'test/' --exclude 'test.sh' --exclude 'README.md' "${tree[@]}" "$stage/"
-jq -s --arg version "$VERSION" '{version: $version, modules: .}' "$WORK/entries.jsonl" > "$stage/manifest.json"
+# "images" is there only when the release has images, so a repository without
+# them publishes the manifest it always did.
+jq -s --arg version "$VERSION" --argjson images "$IMAGES_JSON" \
+  '{version: $version, modules: .} + (if ($images | length) > 0 then {images: $images} else {} end)' \
+  "$WORK/entries.jsonl" > "$stage/manifest.json"
 python3 "$HERE/sbom.py" agent "$WORK/entries.jsonl" "$VERSION" > "$stage/index-sbom.spdx.json"
 cp "$stage/manifest.json" "$OUT/manifest.json"
 ( cd "$stage" && zip -r "index-$VERSION.zip" "${tree[@]}" manifest.json index-sbom.spdx.json >/dev/null )

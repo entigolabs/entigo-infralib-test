@@ -691,7 +691,7 @@ case $COMMAND in
     [ -n "$REGISTRIES" ] && [ -n "$RELEASE" ] || die "usage: test.sh publish --registries REG[,REG...] --release X.Y.Z"
     pull "$(image_for aws)"
     base_args aws agent
-    for v in GH_TOKEN GH_ACTOR SUPPLIER OCI_SIGN SIGSTORE_ID_TOKEN COSIGN_EXPERIMENTAL RETRY_ATTEMPTS RETRY_DELAY ECR_PULL_PRINCIPALS; do
+    for v in GH_TOKEN GH_ACTOR SUPPLIER OCI_SIGN OCI_IMAGES SIGSTORE_ID_TOKEN COSIGN_EXPERIMENTAL RETRY_ATTEMPTS RETRY_DELAY ECR_PULL_PRINCIPALS; do
       if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
     done
     mkdir -p .infralib-test/oci-publish

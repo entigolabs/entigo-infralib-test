@@ -20,6 +20,7 @@
 #       with:
 #         clouds: ${{ inputs.cloud || '' }}
 #         oci_registries: ghcr.io/<org>/<repo>-release,public.ecr.aws/<alias>/<repo>-release   # optional
+#         oci_images: ${{ needs.<job>.outputs.images }}                                        # optional
 #         release_repo: https://github.com/<org>/<repo>-release                                # optional
 #       secrets: inherit
 #
@@ -46,6 +47,10 @@ on:
     inputs:
       oci_registries:
         description: optional comma separated OCI registry paths to publish charts, modules and the signed index to; the first is primary, the rest mirrors
+        type: string
+        default: ''
+      oci_images:
+        description: optional JSON array of the container images that belong to the release, with their digests per registry, written to the index's manifest.json as "images"; the caller tags and signs them, the format is in scripts/oci/publish.sh
         type: string
         default: ''
       release_repo:
@@ -310,6 +315,7 @@ jobs:
       with:
         registries: ${{ inputs.oci_registries }}
         version: ${{ steps.version.outputs.oci }}
+        images: ${{ inputs.oci_images }}
         out: ${{ runner.temp }}/oci-publish
     - name: Attach manifest and index to the release
       if: steps.version.outputs.needed == 'true' && inputs.oci_registries != ''
