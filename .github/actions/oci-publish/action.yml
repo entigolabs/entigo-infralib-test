@@ -13,6 +13,9 @@ inputs:
   version:
     description: bare semver of the release
     required: true
+  images:
+    description: optional JSON array of the release's container images with their digests, written to manifest.json as "images"; the format is in scripts/oci/publish.sh
+    default: ''
   supplier:
     description: organisation name for the SBOMs
     default: ${{ github.repository_owner }}
@@ -41,6 +44,7 @@ runs:
       env:
         REGISTRIES: ${{ inputs.registries }}
         VERSION: ${{ inputs.version }}
+        OCI_IMAGES: ${{ inputs.images }}
         SUPPLIER: ${{ inputs.supplier }}
         OUT: ${{ inputs.out }}
       run: ${{ github.action_path }}/../../../scripts/oci/publish.sh
