@@ -7,7 +7,9 @@
 #
 # A terraform module (modules/<type>/<name>, type not k8s) is linted with
 # tflint; the terraform_required_providers rule is off, since the agent
-# generates the providers. A k8s module (a Helm chart) gets helm lint --strict,
+# generates the providers. A module that vendors community modules
+# (vendor.yaml, see vendor.sh) is first checked to carry exactly what its
+# vendor.yaml and vendor.lock say. A k8s module (a Helm chart) gets helm lint --strict,
 # a helm template render, and a kube-score of the rendered manifests. Both
 # helm steps use the chart's test/static_values.yaml when there is one, for
 # values the chart cannot default (a hostname, say). kube-score skips the
@@ -38,7 +40,7 @@ MODULES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || die "--root needs a value"; ROOT=$2; shift 2 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) MODULES+=("${1%/}"); shift ;;
   esac
@@ -75,6 +77,10 @@ kube_score_ignore() {
 
 check_terraform() {
   local module=$1
+  if [ -e "$module/vendor.yaml" ] || [ -e "$module/vendor.lock" ] || [ -d "$module/vendors" ]; then
+    log "vendored modules of $module"
+    "$(dirname "${BASH_SOURCE[0]}")/vendor.sh" --root "$ROOT" --check "$module" || return 1
+  fi
   log "tflint $module"
   # The whole repository is mounted and tflint changes into the module, so
   # a module that includes a sibling (oke and its oke-node-pool, through a
