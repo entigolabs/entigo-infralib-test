@@ -222,6 +222,7 @@ def generate_tofu_sbom(module_dir, module_name, version, module_type):
             content = f.read()
     except FileNotFoundError:
         print(f"Warning: versions.tf not found in {module_dir}", file=sys.stderr)
+        add_vendored_modules(doc, root_id, module_dir)
         return doc
 
     # Parse required_providers blocks
@@ -256,7 +257,39 @@ def generate_tofu_sbom(module_dir, module_name, version, module_type):
             relationship="BUILD_TOOL_OF"
         )
 
+    add_vendored_modules(doc, root_id, module_dir)
     return doc
+
+
+def add_vendored_modules(doc, root_id, module_dir):
+    # The community modules shipped inside the package under vendors/, from
+    # the vendor.lock that scripts/vendor.sh writes: a list of flat
+    # "key: value" entries, each starting with "- name:".
+    try:
+        with open(f"{module_dir}/vendor.lock") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return
+    entries = []
+    for line in lines:
+        m = re.match(r'^\s*(-\s+)?(\w+):\s*(\S+)\s*$', line)
+        if not m or line.lstrip().startswith("#"):
+            continue
+        if m.group(1):
+            entries.append({})
+        if entries:
+            entries[-1][m.group(2)] = m.group(3)
+    for e in entries:
+        if not all(k in e for k in ("name", "source", "version", "repository", "commit")):
+            continue
+        add_dependency(
+            doc, root_id, f"SPDXRef-vendored-{safe_spdx_id(e['name'])}", e["source"], e["version"],
+            download_location=f"git+{e['repository']}@{e['commit']}",
+            package_type="LIBRARY",
+            purl=f"pkg:terraform/{e['source']}@{e['version']}",
+            comment=f"Vendored in vendors/{e['name']} from {e['repository']} at commit {e['commit']}",
+            relationship="CONTAINS"
+        )
 
 
 def generate_agent_sbom(entries_path, version):

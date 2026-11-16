@@ -8,7 +8,8 @@
 #                           the modules' provider.yaml files
 #   report.sh <cloud>       OpenTofu providers and registry modules used by
 #                           modules/<cloud>*/ (modules/aws and modules/aws-v2
-#                           for aws)
+#                           for aws): the ones pinned in the modules' .tf
+#                           files and the vendored ones of their vendor.yaml
 #   report.sh --list-kinds  the kinds this repository has, one per line
 #
 # One line per finding on stdout, "<name> newer version <latest>, current
@@ -38,7 +39,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || die "--root needs a value"; ROOT=$2; shift 2 ;;
     --list-kinds) LIST=true; shift ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) [ -z "$KIND" ] || die "one kind at a time"; KIND=$1; shift ;;
   esac
@@ -247,16 +248,29 @@ sources_with_versions() {
     }' | tr -d '"' | sort -u
 }
 
+# The modules a vendor.yaml lists (see vendor.sh), in the same
+# "source=version" shape: a vendored module is called by its path, so its
+# version is in no .tf file.
+vendored_with_versions() {
+  cat "$@" 2>/dev/null | awk '{ sub(/[[:space:]]+#.*$/, "") }
+    $1 == "-" { $1 = ""; $0 = $0 }
+    $1 == "source:"  { source = $2 }
+    $1 == "version:" { print source "=" $2 }' | tr -d "\"'" | sort -u
+}
+
 # A version that is a constraint rather than a pin (">= 5.0", "~> 1.2") is
 # satisfied by whatever is current and has nothing to report.
 exact_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)*$ ]]; }
 
 report_tofu() {
-  local kind=$1 dirs tf_files line source current latest name
+  local kind=$1 dirs tf_files vendor_files line source current latest name
   dirs=$(ls -d "modules/$kind" modules/"$kind"-v* 2>/dev/null || true)
   [ -n "$dirs" ] || { [ -f "report/$kind.sh" ] && return 0 || die "no modules/$kind directory"; }
-  tf_files=$(find $dirs -name '*.tf' | sort)
-  [ -n "$tf_files" ] || return 0
+  # The files of a vendored module are not the repository's to update: what
+  # is followed is the version in vendor.yaml.
+  tf_files=$(find $dirs -name '*.tf' -not -path '*/vendors/*' | sort)
+  vendor_files=$(find $dirs -mindepth 2 -maxdepth 2 -name vendor.yaml | sort)
+  [ -n "$tf_files$vendor_files" ] || return 0
   # Two modules may use different submodules of the same registry module,
   # which is one line once the //submodule path is dropped; hence sort -u.
   while read -r line; do
@@ -285,7 +299,7 @@ report_tofu() {
           echo "$name newer version $latest, current $current"
         fi ;;
     esac
-  done < <(sources_with_versions $tf_files) | sort -u
+  done < <({ [ -z "$tf_files" ] || sources_with_versions $tf_files; [ -z "$vendor_files" ] || vendored_with_versions $vendor_files; } | sort -u) | sort -u
 }
 
 case "$KIND" in

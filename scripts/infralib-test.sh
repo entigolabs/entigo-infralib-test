@@ -38,6 +38,13 @@ commands:
   static     static checks of the given modules (all without arguments), no
              cloud needed: tflint for terraform modules, helm lint, helm
              template and kube-score for charts (scripts/static.sh)
+  vendor     the community OpenTofu modules the given modules list in their
+             vendor.yaml, copied into the module's vendors/ directory with a
+             vendor.lock, so that nothing is downloaded for them at init time
+             (test.sh vendor modules/aws/efs); --check verifies, offline, that
+             the vendored modules of the given modules (all without
+             arguments) are what vendor.yaml and vendor.lock say
+             (scripts/vendor.sh)
   kubeconfig contexts for the selected environments' clusters, written by the
              cloud CLI of each environment's image to .infralib-test/kubeconfig,
              which the tests then use (KUBECONFIG in the shell still wins)
@@ -149,11 +156,13 @@ QUIET=false
 VERBOSE=false
 
 NUKE_ARGS=()
+VENDOR_ARGS=()
 REGISTRIES=""
 RELEASE=""
 case "${1:-}" in
   run|agent|test|generate|destroy|envs|shell|static|kubeconfig|publish|report) COMMAND=$1; shift ;;
   nuke) COMMAND=nuke; shift; NUKE_ARGS=("$@"); set -- ;;
+  vendor) COMMAND=vendor; shift; VENDOR_ARGS=("$@"); set -- ;;
 esac
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -715,6 +724,12 @@ case $COMMAND in
       docker run "${ARGS[@]}" --entrypoint /opt/infralib-test/scripts/report.sh "$(image_for aws)" "$k" || rc=1
     done
     exit "${rc:-0}"
+    ;;
+  vendor)
+    # The vendoring script with its own arguments ([--check] [module-dir ...]),
+    # on the host: it needs curl and git, and the files it writes are the
+    # caller's.
+    exec "$(dirname "${BASH_SOURCE[0]}")/vendor.sh" --root "$ROOT" "${VENDOR_ARGS[@]}"
     ;;
   static)
     exec "$(dirname "${BASH_SOURCE[0]}")/static.sh" --root "$ROOT" "${MODULES[@]}"
