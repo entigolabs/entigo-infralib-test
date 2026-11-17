@@ -21,8 +21,9 @@
 #   vendor.lock   written by this script: what that resolved to, the
 #                 directory name under vendors/ (the name of the module's
 #                 repository), the repository, the commit and a checksum of
-#                 the vendored tree; and, with a parent instead of a
-#                 checksum, every module vendored inside one of them
+#                 the vendored tree; and, marked required_by, every
+#                 module that one of them calls, which the script found
+#                 and vendored by itself
 #
 #   vendor.sh <module-dir>...
 #       Like "helm dependency update": downloads every module of vendor.yaml
@@ -38,14 +39,16 @@
 #       for every terraform module that vendors something.
 #
 # A vendored module that calls a registry module of its own (terraform-aws-eks
-# and its kms module) gets that module vendored the same way, in its own
-# vendors/ directory (vendors/terraform-aws-eks/vendors/terraform-aws-kms),
-# in the highest version its constraint allows, and the call rewritten to that
-# path. Only the calls that can be reached from what the module uses are
-# followed: a submodule nobody calls keeps its registry calls, which OpenTofu
-# never loads. Those rewritten call lines are the only difference between a
-# vendored tree and its upstream commit. --check fails when a module with a
-# vendor.yaml can still reach a module call that is downloaded at init time.
+# and its kms module) gets that module vendored too, without a vendor.yaml
+# entry: next to it, in a directory named after both
+# (vendors/terraform-aws-eks--terraform-aws-kms), in the highest version its
+# constraint allows, and the call rewritten to that path. vendor.lock lists it
+# as required_by the module that calls it. Only the calls that can be reached
+# from what the module uses are followed: a submodule nobody calls keeps its
+# registry calls, which OpenTofu never loads. Those rewritten call lines are
+# the only difference between a vendored tree and its upstream commit. --check
+# fails when a module with a vendor.yaml can still reach a module call that is
+# downloaded at init time.
 #
 # Needs curl, git and sha256sum; --check only sha256sum. Module directories
 # are relative to the repository root: run from there or pass --root <dir>.
@@ -59,7 +62,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || die "--root needs a value"; ROOT=$2; shift 2 ;;
     --check) CHECK=true; shift ;;
-    -h|--help) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) DIRS+=("${1%/}"); shift ;;
   esac
@@ -73,12 +76,12 @@ tree_checksum() {
 }
 
 # wanted FILE: "source version" per entry of a vendor.yaml or vendor.lock. The
-# lock's entries with a parent are modules vendored inside another one, which
-# vendor.yaml does not list.
+# lock's required_by entries are the modules the script found by itself,
+# which vendor.yaml does not list.
 wanted() {
   awk '{ sub(/[[:space:]]+#.*$/, "") }
        $1 == "-" { $1 = ""; $0 = $0; nested = 0 }
-       $1 == "parent:"  { nested = 1 }
+       $1 == "required_by:" { nested = 1 }
        $1 == "source:"  { source = $2; gsub(/["\x27]/, "", source) }
        $1 == "version:" { version = $2; gsub(/["\x27]/, "", version); if (!nested) print source, version }' "$1"
 }
@@ -236,15 +239,16 @@ fetch_tree() {
   [ -n "$(find "$src" -maxdepth 1 -type f -iname 'licen[cs]e*' -print -quit)" ] || die "$repo@$commit ships no licence file; it cannot be redistributed as is"
 }
 
-# nested TREE PARENT LOCK ENTRY...: vendors the registry modules that the
-# vendored module in TREE calls, as far as they can be reached from its
-# ENTRY directories (the ones the caller uses: "." or modules/<sub>), into
-# TREE/vendors/<repository-name>, rewrites those calls to the local path,
-# appends a lock entry with PARENT to LOCK, and does the same inside each.
+# nested TREE LOCK ENTRY...: vendors the registry modules that the vendored
+# module in TREE calls, as far as they can be reached from its ENTRY
+# directories (the ones the caller uses: "." or modules/<sub>), next to TREE
+# as <TREE's name>--<repository-name>, rewrites those calls to that path, and
+# does the same for each of them. Their lock entries, marked required_by, are
+# appended to LOCK, each followed by the entries of what it requires itself.
 nested() {
-  local tree parent=$2 lock=$3 entry line file source version base sub name picked dest prefix rel map REPO COMMIT REACHED=() entries=()
-  local -A SEEN=() NAME=() CONSTRAINT=() SUBS=() FILES=()
-  tree=$(cd "$1" && pwd -P); shift 3
+  local tree lock=$2 parent entry line file source version base sub name picked dest prefix rel map REPO COMMIT REACHED=() entries=()
+  local -A SEEN=() NAME=() CONSTRAINT=() SUBS=() FILES=() PICKED=() REPOS=() COMMITS=()
+  tree=$(cd "$1" && pwd -P); parent=$(basename "$tree"); shift 2
   for entry in "$@"; do
     [ -d "$tree/$entry" ] || die "$parent has no directory $entry"
     walk "$tree/$entry"
@@ -259,20 +263,10 @@ nested() {
     if [ -z "${NAME[$base]:-}" ]; then
       picked=$(pick "$base" "$version")
       resolve "$base" "$picked"
-      name=$(basename "$REPO"); dest="$tree/vendors/$name"
-      [ ! -e "$dest" ] || die "$parent calls two modules that would both be vendored as $name"
-      mkdir -p "$tree/vendors"
+      name="$parent--$(basename "$REPO")"; dest="$(dirname "$tree")/$name"
+      [ ! -e "$dest" ] || die "$parent requires $base, which would be vendored as $name, but that directory is already taken"
       fetch_tree "$REPO" "$COMMIT" "$dest"
-      NAME[$base]=$name; CONSTRAINT[$base]=$version
-      {
-        echo "  - name: $name"
-        echo "    parent: $parent"
-        echo "    source: $base"
-        echo "    version: $picked"
-        echo "    repository: $REPO"
-        echo "    commit: $COMMIT"
-      } >> "$lock"
-      echo "  inside $parent: $base $picked (${COMMIT:0:12}) as $name"
+      NAME[$base]=$name; CONSTRAINT[$base]=$version; PICKED[$base]=$picked; REPOS[$base]=$REPO; COMMITS[$base]=$COMMIT
     elif [ "${CONSTRAINT[$base]}" != "$version" ]; then
       die "$parent calls $base with two version constraints (\"${CONSTRAINT[$base]}\" and \"$version\"), which cannot be vendored into one directory"
     fi
@@ -280,17 +274,18 @@ nested() {
   done
 
   # The calls, rewritten: a path from the file's own directory to the
-  # module's vendors/, and no version, which a local source cannot have.
+  # directory next to the module, and no version, which a local source
+  # cannot have.
   map=""; for base in "${!NAME[@]}"; do map+="$base=${NAME[$base]};"; done
   for file in "${!FILES[@]}"; do
-    rel=$(dirname "${file#"$tree"/}"); prefix=./
-    [ "$rel" = . ] || prefix=$(sed -E 's#[^/]+#..#g' <<<"$rel")/
+    rel=$(dirname "${file#"$tree"/}"); prefix=../
+    [ "$rel" = . ] || prefix=../$(sed -E 's#[^/]+#..#g' <<<"$rel")/
     awk -v map="$map" -v prefix="$prefix" '
       function flush(    i, n, parts, kv, base, subdir, target, indent) {
         target = ""; base = src; subdir = ""
         if (index(src, "//")) { base = substr(src, 1, index(src, "//") - 1); subdir = substr(src, index(src, "//") + 2) }
         n = split(map, parts, ";")
-        for (i = 1; i <= n; i++) { split(parts[i], kv, "="); if (kv[1] == base) target = prefix "vendors/" kv[2] (subdir != "" ? "/" subdir : "") }
+        for (i = 1; i <= n; i++) { split(parts[i], kv, "="); if (kv[1] == base) target = prefix kv[2] (subdir != "" ? "/" subdir : "") }
         for (i = 1; i <= count; i++) {
           if (target != "" && i == verline) continue
           if (target != "" && i == srcline) { indent = block[i]; sub(/source.*$/, "", indent); print indent "source = \"" target "\""; continue }
@@ -308,15 +303,31 @@ nested() {
     mv "$file.rewritten" "$file"
   done
 
+  # Each one's own requirements first: its checksum is of the tree with its
+  # calls rewritten.
   while read -r base; do
+    name=${NAME[$base]}; dest="$(dirname "$tree")/$name"
     mapfile -t entries < <(printf '%s' "${SUBS[$base]}" | LC_ALL=C sort -u)
-    nested "$tree/vendors/${NAME[$base]}" "$parent/vendors/${NAME[$base]}" "$lock" "${entries[@]}"
+    : > "$lock.$name"
+    nested "$dest" "$lock.$name" "${entries[@]}"
+    {
+      echo "  - name: $name"
+      echo "    required_by: $parent"
+      echo "    source: $base"
+      echo "    version: ${PICKED[$base]}"
+      echo "    repository: ${REPOS[$base]}"
+      echo "    commit: ${COMMITS[$base]}"
+      echo "    checksum: sha256:$(tree_checksum "$dest")"
+      cat "$lock.$name"
+    } >> "$lock"
+    rm -f "$lock.$name"
+    echo "  required by $parent: $base ${PICKED[$base]} (${COMMITS[$base]:0:12}) as $name"
   done < <(printf '%s\n' "${!NAME[@]}" | LC_ALL=C sort)
 }
 
 # fetch SOURCE VERSION STAGE DIR: one module of DIR's vendor.yaml into
-# STAGE/<repository-name>, with the modules it calls inside it, its lock
-# entries appended to STAGE/vendor.lock.
+# STAGE/<repository-name>, with the modules it requires next to it, their
+# lock entries appended to STAGE/vendor.lock.
 fetch() {
   local source=$1 version=$2 stage=$3 dir=$4 REPO COMMIT repo commit name src file call entries=()
   resolve "$source" "$version"
@@ -336,7 +347,7 @@ fetch() {
   done < <(module_calls "$dir"/*.tf)
   [ ${#entries[@]} -gt 0 ] || { entries=(.); echo "NOTE: no module call in $dir uses ./vendors/$name yet: its own module calls were followed from its root. Run this again after writing a call to one of its submodules." >&2; }
   : > "$stage/.nested.lock"
-  nested "$src" "$name" "$stage/.nested.lock" "${entries[@]}"
+  nested "$src" "$stage/.nested.lock" "${entries[@]}"
 
   {
     echo "  - name: $name"
@@ -365,6 +376,8 @@ update() {
   {
     echo "# Written by ./test.sh vendor from vendor.yaml: what each module resolved to."
     echo "# Never edit this file or the directories under vendors/ by hand."
+    echo "# An entry with required_by is a dependency the script discovered by itself:"
+    echo "# a module that the named vendored module calls. It is not in vendor.yaml."
     echo "modules:"
   } > "$stage/vendor.lock"
   while read -r source version; do fetch "$source" "$version" "$stage" "$dir"; done < <(wanted "$dir/vendor.yaml")
