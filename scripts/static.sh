@@ -11,7 +11,9 @@
 # (vendor.yaml, see vendor.sh) is first checked to carry exactly what its
 # vendor.yaml and vendor.lock say. A k8s module (a Helm chart) gets helm lint --strict,
 # a helm template render, and a kube-score of the rendered manifests. Both
-# helm steps use the chart's test/static_values.yaml when there is one, for
+# helm steps use the chart's values-images.yaml when there is one (the image
+# digests, a value file the agent adds to the Application) and then its
+# test/static_values.yaml when there is one, for
 # values the chart cannot default (a hostname, say). kube-score skips the
 # checks every chart of the agent's platform fails by design (pull policy,
 # read-only root filesystem, user ids, pod disruption budgets, statefulset
@@ -93,7 +95,10 @@ check_terraform() {
 check_chart() {
   local module=$1 name values=() ignore=()
   name=$(basename "$module")
-  [ -f "$module/test/static_values.yaml" ] && values=(-f test/static_values.yaml)
+  # In the order the agent applies them: the image digests are a value file of
+  # the Application, the static values stand in for the inputs that override it.
+  [ -f "$module/values-images.yaml" ] && values+=(-f values-images.yaml)
+  [ -f "$module/test/static_values.yaml" ] && values+=(-f test/static_values.yaml)
   # The function runs on the right of ||, where errexit is off, so each
   # failure returns by hand: a chart that does not lint or render must fail
   # here, not pass an empty render to kube-score.
