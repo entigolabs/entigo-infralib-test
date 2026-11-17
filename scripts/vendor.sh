@@ -28,7 +28,8 @@
 #   vendor.sh <module-dir>...
 #       Like "helm dependency update": downloads every module of vendor.yaml
 #       in the version the registry serves, prunes what a module call never
-#       reads, writes it to <module-dir>/vendors/<repository-name> and writes
+#       reads (README.md and the licence file stay), writes it to
+#       <module-dir>/vendors/<repository-name> and writes
 #       <module-dir>/vendor.lock. The module calls it with
 #       source = "./vendors/<repository-name>" (or "./vendors/<repository-name>/modules/<sub>" for a submodule)
 #       and no version. A version bump is an edit of vendor.yaml and this.
@@ -62,7 +63,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || die "--root needs a value"; ROOT=$2; shift 2 ;;
     --check) CHECK=true; shift ;;
-    -h|--help) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,56p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) DIRS+=("${1%/}"); shift ;;
   esac
@@ -232,7 +233,9 @@ fetch_tree() {
     rm -f CODEOWNERS Makefile Gemfile Gemfile.lock kitchen.yml metadata.yaml metadata.display.yaml
     find . -mindepth 2 -type f \( -name 'metadata.yaml' -o -name 'metadata.display.yaml' \) -delete
     find . -maxdepth 1 -type f -name '.*' -delete
-    find . -type f -name '*.md' -delete
+    # Every README.md stays, the module's and its submodules': it documents
+    # the inputs and outputs of the code next to it. Other Markdown goes.
+    find . -type f -name '*.md' ! -iname 'README.md' -delete
     find . -type l -delete
     find . -type d -empty -delete )
   [ -n "$(find "$src" -name '*.tf' -print -quit)" ] || die "$repo@$commit has no module files after pruning"

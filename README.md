@@ -173,7 +173,7 @@ A terraform module that calls a community module from the registry makes `tofu i
 |---|---|---|
 | `vendor.yaml` | hand, or update automation | what is wanted: a registry `source` (`<namespace>/<name>/<provider>`, without a `//submodule` path) and a `version` per module |
 | `vendor.lock` | `test.sh vendor` | what that resolved to: the directory `name` under `vendors/` (the name of the module's git repository), the repository, the commit and a checksum of the vendored tree; also, marked `required_by`, the modules those call, which the script discovers by itself |
-| `vendors/<name>/` | `test.sh vendor` | the module at that commit, without its examples, tests, docs and build files; the licence file is kept |
+| `vendors/<name>/` | `test.sh vendor` | the module at that commit, without its examples, tests, docs and build files; every `README.md` and the licence file are kept |
 
 ```yaml
 # modules/aws/efs/vendor.yaml
