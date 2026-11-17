@@ -282,12 +282,17 @@ def add_vendored_modules(doc, root_id, module_dir):
     for e in entries:
         if not all(k in e for k in ("name", "source", "version", "repository", "commit")):
             continue
+        # An entry with required_by is a dependency of another vendored
+        # module that the vendoring script discovered by itself.
+        comment = f"Vendored in vendors/{e['name']} from {e['repository']} at commit {e['commit']}"
+        if "required_by" in e:
+            comment += f"; automatically discovered dependency of vendors/{e['required_by']}"
         add_dependency(
             doc, root_id, f"SPDXRef-vendored-{safe_spdx_id(e['name'])}", e["source"], e["version"],
             download_location=f"git+{e['repository']}@{e['commit']}",
             package_type="LIBRARY",
             purl=f"pkg:terraform/{e['source']}@{e['version']}",
-            comment=f"Vendored in vendors/{e['name']} from {e['repository']} at commit {e['commit']}",
+            comment=comment,
             relationship="CONTAINS"
         )
 

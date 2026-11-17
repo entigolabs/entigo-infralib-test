@@ -45,6 +45,8 @@ while [ $# -gt 0 ]; do
     *) MODULES+=("${1%/}"); shift ;;
   esac
 done
+# Before the cd: the script may have been called by a relative path.
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 cd "$ROOT"
 ROOT=$(pwd -P)
 
@@ -79,7 +81,7 @@ check_terraform() {
   local module=$1
   if [ -e "$module/vendor.yaml" ] || [ -e "$module/vendor.lock" ] || [ -d "$module/vendors" ]; then
     log "vendored modules of $module"
-    "$(dirname "${BASH_SOURCE[0]}")/vendor.sh" --root "$ROOT" --check "$module" || return 1
+    "$HERE/vendor.sh" --root "$ROOT" --check "$module" || return 1
   fi
   log "tflint $module"
   # The whole repository is mounted and tflint changes into the module, so
