@@ -282,12 +282,15 @@ def add_vendored_modules(doc, root_id, module_dir):
     for e in entries:
         if not all(k in e for k in ("name", "source", "version", "repository", "commit")):
             continue
+        # An entry with a parent is a module vendored inside another
+        # vendored module, in that module's own vendors/ directory.
+        path = f"vendors/{e['parent']}/vendors/{e['name']}" if "parent" in e else f"vendors/{e['name']}"
         add_dependency(
-            doc, root_id, f"SPDXRef-vendored-{safe_spdx_id(e['name'])}", e["source"], e["version"],
+            doc, root_id, f"SPDXRef-vendored-{safe_spdx_id(path[len('vendors/'):])}", e["source"], e["version"],
             download_location=f"git+{e['repository']}@{e['commit']}",
             package_type="LIBRARY",
             purl=f"pkg:terraform/{e['source']}@{e['version']}",
-            comment=f"Vendored in vendors/{e['name']} from {e['repository']} at commit {e['commit']}",
+            comment=f"Vendored in {path} from {e['repository']} at commit {e['commit']}",
             relationship="CONTAINS"
         )
 
