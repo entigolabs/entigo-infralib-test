@@ -1,5 +1,6 @@
 # Builds the cli image and the per-cloud test images from this repository:
 #   pull request  -> entigolabs/entigo-infralib-test-<cloud>:dev
+#                    (a Dependabot pull request only builds, nothing is pushed)
 #   push to main  -> entigolabs/entigo-infralib-test-<cloud>:<sha> and :main
 #
 # Every image is multi-arch (amd64 and arm64). Each architecture builds on a
@@ -22,6 +23,12 @@
 # A dispatch of this workflow rebuilds the <sha> images of main, but the
 # Release workflow refuses a commit that is released already, so a new base
 # is picked up and released with a commit on main, such as this note.
+#
+# A pull request opened by Dependabot proves that every image still builds on
+# both architectures and stops there: no digest is pushed and no manifest job
+# runs, so :dev keeps pointing at the last build a person asked for. Dependabot
+# runs read the Dependabot secrets, not the repository's; none is needed, and
+# Docker Hub login is skipped unless a credential exists there.
 name: Images
 
 on:
@@ -33,6 +40,10 @@ on:
 concurrency:
   group: images-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # 'false' for a pull request opened by Dependabot, whoever triggered the run.
+  PUBLISH: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
 
 jobs:
   build:
@@ -52,12 +63,15 @@ jobs:
           runner: ubuntu-24.04-arm
     permissions:
       contents: read
+    env:
+      DOCKER_LOGIN: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
     steps:
     - uses: actions/checkout@v7
 
     - uses: docker/setup-buildx-action@v4
 
     - name: Log in to Docker Hub
+      if: env.PUBLISH == 'true' || env.DOCKER_LOGIN == 'true'
       uses: docker/login-action@v4
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
@@ -66,23 +80,25 @@ jobs:
     # push-by-digest: the image is pushed untagged and only its digest comes
     # out; the manifest job below tags it. The cache is per architecture:
     # the layers differ, and so does the runner that reuses them.
-    - name: Build and push by digest
+    - name: Build${{ env.PUBLISH == 'true' && ' and push by digest' || ' only' }}
       id: build
       uses: docker/build-push-action@v7
       with:
         context: .
         file: images/${{ matrix.cloud }}/Dockerfile
         platforms: linux/${{ matrix.arch }}
-        outputs: type=image,name=entigolabs/entigo-infralib-test-${{ matrix.cloud }},push-by-digest=true,name-canonical=true,push=true
+        # Dependabot: the result stays in the build cache and goes nowhere.
+        outputs: ${{ env.PUBLISH == 'true' && format('type=image,name=entigolabs/entigo-infralib-test-{0},push-by-digest=true,name-canonical=true,push=true', matrix.cloud) || 'type=cacheonly' }}
         build-args: |
           VERSION=${{ github.sha }}
           BASE_TAG=latest
-        provenance: mode=max
-        sbom: true
+        provenance: ${{ env.PUBLISH == 'true' && 'mode=max' || 'false' }}
+        sbom: ${{ env.PUBLISH == 'true' }}
         cache-from: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }}
         cache-to: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }},mode=max
 
     - name: Export the digest
+      if: env.PUBLISH == 'true'
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
       run: |
@@ -92,6 +108,7 @@ jobs:
         echo "${{ matrix.cloud }} ${{ matrix.arch }}: ${DIGEST}"
 
     - uses: actions/upload-artifact@v7
+      if: env.PUBLISH == 'true'
       with:
         name: digest-${{ matrix.cloud }}-${{ matrix.arch }}
         path: ${{ runner.temp }}/digests/*
@@ -104,7 +121,8 @@ jobs:
     # Not `needs` alone: with fail-fast off, one failed architecture of one
     # cloud would otherwise skip the manifests of every cloud. Each cloud
     # checks for its own two digests instead and fails on its own.
-    if: ${{ !cancelled() }}
+    # Never for a pull request opened by Dependabot: nothing was pushed.
+    if: ${{ !cancelled() && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
