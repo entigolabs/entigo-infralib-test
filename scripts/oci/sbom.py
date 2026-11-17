@@ -71,7 +71,7 @@ def add_root_package(doc, spdx_id, name, version, download_location, package_typ
 
 
 def add_dependency(doc, root_spdx_id, spdx_id, name, version, download_location,
-                   package_type, purl, comment=None, relationship="DEPENDS_ON"):
+                   package_type, purl, comment=None, relationship="DEPENDS_ON", checksum=None):
     # Dependency package
     pkg = {
         "name": name,
@@ -96,6 +96,9 @@ def add_dependency(doc, root_spdx_id, spdx_id, name, version, download_location,
         pkg["versionInfo"] = version
     if comment:
         pkg["comment"] = comment
+    # "sha256:<hex>", the digest an image is pinned by
+    if checksum and checksum.startswith("sha256:"):
+        pkg["checksums"] = [{"algorithm": "SHA256", "checksumValue": checksum.split(":", 1)[1]}]
     doc["packages"].append(pkg)
 
     # BUILD_TOOL_OF direction is reversed: tool BUILD_TOOL_OF module
@@ -116,6 +119,17 @@ def add_dependency(doc, root_spdx_id, spdx_id, name, version, download_location,
 def safe_spdx_id(name):
     # SPDX IDs only allow letters, numbers and dashes
     return re.sub(r"[^a-zA-Z0-9\-]", "-", name)
+
+
+def split_image_ref(image):
+    # "<repository>[:<tag>][@<digest>]" -> (repository, tag, digest), tag and
+    # digest None when absent. A colon before the last slash is a registry
+    # port, not a tag.
+    ref, _, digest = image.partition("@")
+    tag = None
+    if ":" in ref.split("/")[-1]:
+        ref, tag = ref.rsplit(":", 1)
+    return ref, tag, digest or None
 
 
 def generate_helm_sbom(chart_dir, chart_name, version):
@@ -164,6 +178,11 @@ def generate_helm_sbom(chart_dir, chart_name, version):
     # Run helm template to extract container images
     try:
         cmd = ["helm", "template", chart_dir]
+        # The digests the module pins its images by, as the agent adds this
+        # value file to the Application, so the SBOM lists what is deployed.
+        images_values = f"{chart_dir}/values-images.yaml"
+        if os.path.isfile(images_values):
+            cmd += ["-f", images_values]
         # Some static tests require test/static_values.yaml to render;
         # include it when present (the test folder still exists at SBOM time)
         static_values = f"{chart_dir}/test/static_values.yaml"
@@ -174,11 +193,13 @@ def generate_helm_sbom(chart_dir, chart_name, version):
             capture_output=True, text=True, check=True
         )
         images = set(re.findall(r"image:\s*['\"]?([^\s'\"]+)['\"]?", result.stdout))
+        # Crossplane packages (Provider, Function, Configuration spec.package)
+        # are OCI images too.
+        images |= set(re.findall(r"^\s*package:\s*['\"]?([^\s'\"]+/[^\s'\"]+)['\"]?\s*$", result.stdout, re.MULTILINE))
         for image in sorted(images):
-            tag     = "latest"
-            img_ref = image
-            if ":" in image.split("/")[-1]:
-                img_ref, tag = image.rsplit(":", 1)
+            img_ref, tag, digest = split_image_ref(image)
+            if not tag and not digest:
+                tag = "latest"
             spdx_id = f"SPDXRef-image-{safe_spdx_id(img_ref.replace('/', '-'))}"
 
             parts = img_ref.split("/")
@@ -192,11 +213,20 @@ def generate_helm_sbom(chart_dir, chart_name, version):
             else:
                 img_url = f"https://{img_ref}"
 
+            # A pinned image is identified by its digest: the purl carries it
+            # as the version, and the tag, when there is one, stays a qualifier.
+            purl = f"pkg:oci/{img_ref.split('/')[-1]}"
+            if digest:
+                purl += f"@{digest}"
+            purl += f"?repository_url={img_ref}"
+            if tag:
+                purl += f"&tag={tag}"
             add_dependency(
-                doc, root_id, spdx_id, img_ref, tag,
+                doc, root_id, spdx_id, img_ref, tag or digest,
                 download_location=img_url,
                 package_type="CONTAINER",
-                purl=f"pkg:oci/{img_ref.split('/')[-1]}?repository_url={img_ref}&tag={tag}"
+                purl=purl,
+                checksum=digest
             )
     except subprocess.CalledProcessError as e:
         print(f"Warning: helm template failed: {e.stderr}", file=sys.stderr)
