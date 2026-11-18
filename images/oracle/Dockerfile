@@ -4,7 +4,7 @@
 # It is the agent image of the cloud (entigolabs/entigo-infralib-oracle: tofu,
 # kubectl, helm, the cloud CLI, ei-agent and its entrypoint scripts) plus a Go
 # toolchain, the infralib-test command and warmed Go caches for the framework
-# packages a oracle module test imports. The host orchestrator runs both the
+# packages an oracle module test imports. The host orchestrator runs both the
 # agent and the module tests from this one image, so the two can never disagree
 # about tool versions.
 ARG BASE_TAG=latest
