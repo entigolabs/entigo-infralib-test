@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
@@ -461,3 +462,107 @@ func TestGenerateKeepsEnvironmentDefault(t *testing.T) {
 
 // regularStep tells the fixture environments' own steps from per-module ones.
 func regularStep(name string) bool { return name == "net" || name == "infra" || name == "apps" }
+
+// tuesday and wednesday are the run dates of the run_days tests.
+var (
+	tuesday   = time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	wednesday = tuesday.AddDate(0, 0, 1)
+)
+
+// runDaysFixture is fixture with run_days: tue on aws/hello-world.
+func runDaysFixture(t *testing.T) *env.Config {
+	t.Helper()
+	config := fixture(t)
+	path := filepath.Join(config.Root(), "modules/aws/hello-world/test", env.ModuleFileName)
+	require.NoError(t, os.WriteFile(path, []byte("run_days: tue\n"), 0o644))
+	return config
+}
+
+func netModules(t *testing.T, out string) []string {
+	t.Helper()
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, "net", agent.Steps[0].Name)
+	return moduleNames(agent.Steps[0])
+}
+
+func TestGenerateRunDays(t *testing.T) {
+	config := runDaysFixture(t)
+	options := func(out string, date time.Time) generateOptions {
+		return generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}, Date: date}
+	}
+
+	// A whole run on a day run_days names has the module, with its inputs.
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err := generate(options(out, tuesday))
+	require.NoError(t, err)
+	require.Equal(t, []string{"vpc=aws/vpc", "route53=aws-v2/route53", "hello-world=aws/hello-world"}, netModules(t, out))
+
+	// On another day it is left out; the rest of the step is untouched.
+	out = filepath.Join(t.TempDir(), "agents")
+	result, err := generate(options(out, wednesday))
+	require.NoError(t, err)
+	require.Empty(t, result.Steps["aws_exa"], "still a run of every step")
+	require.Equal(t, []string{"vpc=aws/vpc", "route53=aws-v2/route53"}, netModules(t, out))
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, map[string]any{"vpc_cidr": "10.0.0.0/16"}, agent.Steps[0].Modules[0].Inputs)
+
+	// A run that names the module has it on any day: here in place, the
+	// way a merge to main applies it, inside its regular step.
+	hello, err := config.ModuleBySource("aws/hello-world")
+	require.NoError(t, err)
+	out = filepath.Join(t.TempDir(), "agents")
+	opts := options(out, wednesday)
+	opts.Modules, opts.StepPrefix, opts.InPlace = []env.Module{hello}, "main", true
+	result, err = generate(opts)
+	require.NoError(t, err)
+	require.Equal(t, []string{"net"}, result.Steps["aws_exa"])
+	require.Contains(t, netModules(t, out), "hello-world=aws/hello-world")
+
+	// A run that names another module of the step leaves it out.
+	other, err := config.ModuleBySource("hello-world")
+	require.NoError(t, err)
+	out = filepath.Join(t.TempDir(), "agents")
+	opts = options(out, wednesday)
+	opts.Modules, opts.StepPrefix = []env.Module{other}, "mart-foo"
+	_, err = generate(opts)
+	require.NoError(t, err)
+	require.NotContains(t, netModules(t, out), "hello-world=aws/hello-world")
+}
+
+func TestGenerateRunDaysNeedsCompany(t *testing.T) {
+	config := fixture(t)
+	path := filepath.Join(config.Root(), "environments/google_exa.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("steps:\n  - name: net\n    type: terraform\n    modules:\n      - source: google/alone\n"), 0o644))
+	dir := filepath.Join(config.Root(), "modules/google/alone/test")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, env.ModuleFileName), []byte("run_days: never\n"), 0o644))
+	config, err := env.Load(config.Root())
+	require.NoError(t, err)
+	_, err = generate(generateOptions{Config: config, OutDir: filepath.Join(t.TempDir(), "agents"), Environments: config.All(), Self: env.AgentSource{URL: "/conf"}, Date: tuesday})
+	require.ErrorContains(t, err, "no module left")
+}
+
+func TestSelectModulesRunDays(t *testing.T) {
+	config := runDaysFixture(t)
+	dirs := func(modules []env.Module) []string {
+		var result []string
+		for _, m := range modules {
+			result = append(result, m.Dir)
+		}
+		return result
+	}
+	t.Setenv(env.RunDateEnv, "2026-11-24")
+	modules, err := selectModules(config, config.All(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"modules/aws/hello-world", "modules/k8s/hello-world"}, dirs(modules))
+
+	t.Setenv(env.RunDateEnv, "2026-11-25")
+	modules, err = selectModules(config, config.All(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"modules/k8s/hello-world"}, dirs(modules))
+
+	// Named, it is tested whatever the day.
+	modules, err = selectModules(config, config.All(), []string{"modules/aws/hello-world"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"modules/aws/hello-world"}, dirs(modules))
+}

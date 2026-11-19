@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -29,6 +30,9 @@ type generateOptions struct {
 	// module in a step of its own named <StepPrefix>-<module>, a terraform
 	// module inside its regular step. The post-merge use.
 	InPlace bool
+	// Date is the day of the run: a module whose run_days do not include it
+	// is left out of the configuration unless it is one of Modules.
+	Date time.Time
 }
 
 // generateResult is what the orchestrator needs to run the agent.
@@ -66,7 +70,12 @@ func generateCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	date, err := env.RunDate()
+	if err != nil {
+		return err
+	}
 	opts := generateOptions{
+		Date:         date,
 		Config:       config,
 		OutDir:       *out,
 		Environments: environments,
@@ -150,11 +159,17 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			}
 		}
 		rawModules, _ := rawStep["modules"].([]any)
+		var keptModules []any
 		for j, ref := range step.Modules {
 			m, err := config.Resolve(ref)
 			if err != nil {
 				return nil, fmt.Errorf("step %s: %w", step.Name, err)
 			}
+			if !m.Meta.RunsOn(opts.Date) && !underTest(opts.Modules, m.Source) {
+				fmt.Fprintf(os.Stderr, "%s: %s is left out of step %s today (run_days: %s)\n", e.Name, m.Source, step.Name, m.Meta.RunDays)
+				continue
+			}
+			keptModules = append(keptModules, rawModules[j])
 			if m.External {
 				external = appendUnique(external, m.Source)
 			} else {
@@ -169,6 +184,12 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			if patched.Inputs != nil {
 				rawModule["inputs"] = patched.Inputs
 			}
+		}
+		if len(keptModules) != len(rawModules) {
+			if len(keptModules) == 0 {
+				return nil, fmt.Errorf("step %s has no module left today: a module with run_days cannot be the only one of its step", step.Name)
+			}
+			rawStep["modules"] = keptModules
 		}
 	}
 	if len(external) > 0 && len(e.Sources) == 0 {
@@ -320,6 +341,16 @@ func agentModule(config *env.Config, e *env.Environment, m env.Module) (env.Agen
 		return env.AgentModule{}, err
 	}
 	return env.AgentModule{Name: m.AgentName(e), Source: m.Source, Inputs: inputs}, nil
+}
+
+// underTest reports whether the run names the module.
+func underTest(modules []env.Module, source string) bool {
+	for _, m := range modules {
+		if m.Source == source {
+			return true
+		}
+	}
+	return false
 }
 
 func stepIndex(e *env.Environment, name string) int {

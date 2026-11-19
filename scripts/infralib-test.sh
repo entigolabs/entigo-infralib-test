@@ -234,6 +234,11 @@ require_cloud() {
   esac
 }
 
+# The date a module's run_days (test/module.yaml) are compared with, fixed
+# here so that the agent configuration and the tests of one run agree; set
+# INFRALIB_RUN_DATE=YYYY-MM-DD to run as if it were another day.
+INFRALIB_RUN_DATE="${INFRALIB_RUN_DATE:-$(date -u +%F)}"
+
 # base_args CLOUD ROLE: docker run arguments shared by every container: the
 # checkout at /conf, the executor's uid so written files are theirs, and the
 # credentials of a cloud. Credentials are passed by environment variable and
@@ -245,7 +250,8 @@ require_cloud() {
 base_args() {
   local cloud=$1 role=${2:-test}
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
-        -e INFRALIB_ROOT=/conf -e "INFRALIB_TEST_VERSION=$TAG" -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache)
+        -e INFRALIB_ROOT=/conf -e "INFRALIB_TEST_VERSION=$TAG" -e TF_PLUGIN_CACHE_DIR=/conf/.infralib-test/plugin-cache
+        -e "INFRALIB_RUN_DATE=$INFRALIB_RUN_DATE")
   mkdir -p .infralib-test/plugin-cache
   # Go's own proxy settings, for a network that has a module proxy of its own.
   local v

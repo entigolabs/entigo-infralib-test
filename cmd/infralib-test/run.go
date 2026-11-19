@@ -163,7 +163,8 @@ func runCommand(args []string) error {
 }
 
 // selectModules lists the modules to test: the given directories, or every
-// module with a *_test.go that a selected environment's steps list.
+// module with a *_test.go that a selected environment's steps list and whose
+// run_days, if it has any, include the day of the run.
 func selectModules(config *env.Config, environments []*env.Environment, dirs []string) ([]env.Module, error) {
 	var candidates []env.Module
 	if len(dirs) > 0 {
@@ -185,10 +186,20 @@ func selectModules(config *env.Config, environments []*env.Environment, dirs []s
 			return nil, err
 		}
 	}
+	date, err := env.RunDate()
+	if err != nil {
+		return nil, err
+	}
 	var modules []env.Module
 	for _, m := range candidates {
 		tests, _ := filepath.Glob(filepath.Join(config.Root(), m.TestDir(), "*_test.go"))
 		if len(tests) == 0 {
+			continue
+		}
+		// A run of everything leaves out a module on the days its run_days
+		// do not name: the agent configuration did not install it either.
+		if len(dirs) == 0 && !m.Meta.RunsOn(date) {
+			fmt.Fprintf(os.Stderr, "Not testing %s today (run_days: %s)\n", m.Dir, m.Meta.RunDays)
 			continue
 		}
 		for _, e := range environments {
