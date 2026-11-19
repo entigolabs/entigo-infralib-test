@@ -49,6 +49,15 @@ type ModuleMeta struct {
 	// (pod-networkpolicy, container-resources ...). For charts whose
 	// upstream parts legitimately fail a check, with a comment saying why.
 	KubeScoreIgnore []string `json:"kube_score_ignore,omitempty"`
+	// RunDays limits the runs that are not about the module itself (stable,
+	// release, a main run without changed modules, a local run without
+	// module arguments) to some days of the week, in UTC: the day-of-week
+	// field of a cron expression (tue, mon-fri, 1,4) or never. On the other
+	// days the module is left out of the agent configuration and its tests
+	// do not run. A run that names the module (its pull request, the main
+	// run after its merge) always includes it. For a module that is costly
+	// to keep installed and that nothing else refers to.
+	RunDays string `json:"run_days,omitempty"`
 }
 
 // IsK8s reports whether the module is a Kubernetes (argocd-apps) module.
@@ -320,6 +329,11 @@ func (c *Config) moduleAt(moduleType, name string) (Module, error) {
 	if err == nil {
 		if err := yaml.UnmarshalStrict(data, &m.Meta); err != nil {
 			return Module{}, fmt.Errorf("%s: %w", filepath.Join(m.TestDir(), ModuleFileName), err)
+		}
+		if m.Meta.RunDays != "" {
+			if _, err := parseRunDays(m.Meta.RunDays); err != nil {
+				return Module{}, fmt.Errorf("%s: %w", filepath.Join(m.TestDir(), ModuleFileName), err)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return Module{}, err
