@@ -127,13 +127,14 @@ deprecated_module() {
   [ -f "$1/Chart.yaml" ] && [ "$(yq -r '.deprecated // false' "$1/Chart.yaml")" = true ]
 }
 
-# Highest version tag of a chart in an OCI registry: anonymous pull token
-# where the registry hands one out, then the tags list with its pagination.
-# A registry that does not answer makes it return 1 with the error kept for
-# fetch_error; a registry without the chart gives an empty result.
-latest_oci_chart() {
-  local name=$1 url=$2 ref host path token="" next tags="" response body
-  ref="${url#oci://}/$name"
+# Highest version tag of a repository (<host>/<path>) in an OCI registry:
+# anonymous pull token where the registry hands one out, then the tags list
+# with its pagination. A registry that does not answer makes it return 1 with
+# the error kept for fetch_error; a registry without the repository gives an
+# empty result. Only what an anonymous client is shown counts, so a version
+# the registry keeps for its paying customers is not a version to update to.
+latest_oci_tag() {
+  local ref=$1 host path token="" next tags="" response body
   host=${ref%%/*}
   path=${ref#*/}
   case "$host" in
@@ -142,6 +143,9 @@ latest_oci_chart() {
     public.ecr.aws) body=$(fetch "https://public.ecr.aws/token/?scope=repository:${path}:pull&service=public.ecr.aws") || return 1 ;;
     docker.io|registry-1.docker.io) host=registry-1.docker.io
       body=$(fetch "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${path}:pull") || return 1 ;;
+    # Upbound answers the token request for a repository it does not have
+    # with a 404 already.
+    xpkg.upbound.io) body=$(fetch "https://xpkg.upbound.io/service/token?service=xpkg.upbound.io&scope=repository:${path}:pull") || { case "$(fetch_error)" in "The requested URL returned error: 404"*) return 0 ;; *) return 1 ;; esac; } ;;
     *) body="" ;;
   esac
   token=$(echo "$body" | jq -r '.token // ""' 2>/dev/null || true)
@@ -156,6 +160,9 @@ latest_oci_chart() {
   done
   echo "$tags" | tr ' ' '\n' | highest
 }
+
+# Highest version tag of a chart in an OCI registry.
+latest_oci_chart() { latest_oci_tag "${2#oci://}/$1"; }
 
 # Highest version in a classic chart repository. The repository is added
 # under a name derived from its URL, so two charts that share a dependency
@@ -204,10 +211,13 @@ report_k8s_charts() {
   done
 }
 
-# Crossplane provider packages: the Upbound marketplace redirects a provider's
-# page to its latest version, which is the fifth path element of the redirect.
+# Crossplane provider packages: the highest version tag the package registry
+# lists to an anonymous client. Upbound's marketplace page is not asked: it
+# announces a version before, or without, the registry serving it publicly
+# (some versions are for subscribers only, others exist only with a suffix),
+# and a version that cannot be pulled cannot be installed or mirrored.
 report_k8s_providers() {
-  local file provider path current latest
+  local file provider path current latest v
   for file in $(find modules/k8s -name provider.yaml 2>/dev/null | sort); do
     # provider.yaml sits at varying depths under templates/, so the module
     # is modules/k8s/<module>, not the file's own directory.
@@ -216,12 +226,13 @@ report_k8s_providers() {
       [ -n "$provider" ] || continue
       path=${provider%%:*}
       current=${provider#*:}
-      body=$(fetch "https://marketplace.upbound.io/providers/$path") || { unreachable "$path crossplane provider package" "https://marketplace.upbound.io/providers/$path" "$(fetch_error)" "$file"; continue; }
-      latest=$(echo "$body" | cut -d/ -f5)
+      latest=$(latest_oci_tag "xpkg.upbound.io/$path") || { unreachable "$path crossplane provider package" "https://xpkg.upbound.io/v2/$path/tags/list" "$(fetch_error)" "$file"; continue; }
       if [ -z "$latest" ]; then
-        not_found "$path crossplane provider package latest version https://marketplace.upbound.io/providers/$path not found ($file)"
-      elif [ "$current" != "$latest" ]; then
-        echo "$path newer version $latest, current $current ($file)"
+        not_found "$path crossplane provider package has no version tag in xpkg.upbound.io ($file)"
+      elif [ "$latest" != "$(semver3 "$current")" ]; then
+        # Tags carry the "v" the package line has; highest drops it.
+        v=""; case "$current" in v*) v=v ;; esac
+        echo "$path newer version $v$latest, current $current ($file)"
       fi
     done < <(grep xpkg.upbound.io "$file" | grep -v '\$provider' | cut -d/ -f2- || true)
   done
