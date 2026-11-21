@@ -108,7 +108,12 @@ the agent as its config/<step>/include/.
 environment variables:
   INFRALIB_TEST_VERSION       image tag, normally pinned by test.sh
   INFRALIB_TEST_IMAGE_PREFIX  image name prefix (default entigolabs/entigo-infralib-test-)
-  INFRALIB_AGENT_IMAGE        run the agent from this image instead of the test image
+  INFRALIB_AGENT_IMAGE        run the agent from this image instead of the agent image
+                              of the environment's cloud
+  INFRALIB_AGENT_IMAGE_PREFIX agent image name prefix (default entigolabs/entigo-infralib-)
+  INFRALIB_AGENT_TAG          agent image tag (default dev with the dev test images,
+                              latest otherwise)
+  INFRALIB_BACKGROUND_PULL    false: do not pull the test images while the agents run
   INFRALIB_DESTROY            true = --destroy
   AWS_REGION, AWS_*           aws region (required for aws environments) and
                               credentials/profile; ~/.aws is mounted when present
@@ -201,8 +206,28 @@ mkdir -p agents logs
 KUBECONFIG_FILE=.infralib-test/kubeconfig
 IMAGE_PREFIX="${INFRALIB_TEST_IMAGE_PREFIX:-entigolabs/entigo-infralib-test-}"
 image_for() { echo "${IMAGE_PREFIX}$1:${TAG}"; }
+# The agent images (entigolabs/entigo-infralib-<cloud> and -kubectl) the test
+# images are built on. They are not tagged per framework version: the dev test
+# images are built on their dev tag, every other one on latest.
+AGENT_IMAGE_PREFIX="${INFRALIB_AGENT_IMAGE_PREFIX:-entigolabs/entigo-infralib-}"
+AGENT_TAG="${INFRALIB_AGENT_TAG:-$([ "$TAG" = dev ] && echo dev || echo latest)}"
 # shellcheck source=aws-role.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aws-role.sh"
+
+# pull_in_background IMAGE: start pulling an image and go on. The pull
+# outlives this script, so a later run (the test step of a workflow, say)
+# finds the image there or joins the download: docker serves one pull of an
+# image to everyone who asks for it.
+BACKGROUND_PULLED=()
+pull_in_background() {
+  local image=$1 p
+  [ "$PULL" = true ] && [ "${INFRALIB_BACKGROUND_PULL:-true}" != false ] || return 0
+  for p in "${PULLED[@]:-}" "${BACKGROUND_PULLED[@]:-}"; do [ "$p" = "$image" ] && return 0; done
+  log "Pulling $image in the background"
+  nohup docker pull -q "$image" >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
+  BACKGROUND_PULLED+=("$image")
+}
 
 PULLED=()
 pull() {
@@ -489,21 +514,40 @@ module_source() {
 }
 
 # ---------------------------------------------------------------- agent
-# agent_image ENV: the image the environment's agent runs in. A run of
-# Kubernetes (ArgoCD) steps alone uses the kubectl image, one for every cloud:
-# the steps reach the cluster, the registry and the bucket with shackle and
-# need no cloud tooling. Anything else has OpenTofu steps and runs in the
-# cloud's own image. INFRALIB_AGENT_IMAGE overrides both.
+# agent_image ENV: the image the environment's agent runs in: the plain agent
+# image, not the test image built on it. The agent needs nothing the test
+# image adds, and the plain image is a fraction of the size, so the agent
+# starts sooner; the test image is pulled meanwhile (run_agents), and since
+# its lower layers are the agent image's, only what it adds is left to
+# download. A run of Kubernetes (ArgoCD) steps alone uses the kubectl image,
+# one for every cloud: the steps reach the cluster, the registry and the
+# bucket with shackle and need no cloud tooling. Anything else has OpenTofu
+# steps and runs in the cloud's own image. INFRALIB_AGENT_IMAGE overrides
+# both.
 agent_image() {
   local kind="KIND_${1//-/_}"
   if [ -n "${INFRALIB_AGENT_IMAGE:-}" ]; then
     echo "$INFRALIB_AGENT_IMAGE"
   elif [ "${!kind:-any}" = k8s ]; then
-    image_for kubectl
+    echo "${AGENT_IMAGE_PREFIX}kubectl:${AGENT_TAG}"
   else
-    image_for "$(env_cloud "$1")"
+    echo "${AGENT_IMAGE_PREFIX}$(env_cloud "$1"):${AGENT_TAG}"
   fi
 }
+
+# What a plain agent image needs before the agent can run in it as the
+# executor: the images know one user, uid 1000, who owns the certificate
+# store and may sudo update-ca-certificates, and sudo refuses anyone without
+# a passwd entry. So, as root, the store is opened to everyone and sudo is
+# shimmed to run its command as it is; the test images do the same at build
+# time. Both alpine and Azure Linux stores are covered.
+AGENT_PREPARE='
+for d in /usr/local/share/ca-certificates /etc/ssl/certs /etc/pki/ca-trust; do
+  if [ -d "$d" ]; then chmod -R a+rwX "$d"; fi
+done
+printf "#!/bin/sh\n# Shim: the agent runs as the executor, whom this image does not know, and\n# sudo refuses a user without a passwd entry.\n[ \"\$1\" = -n ] && shift\nexec \"\$@\"\n" > /usr/local/bin/sudo
+chmod 755 /usr/local/bin/sudo
+'
 
 # apply_overrides ENV: export the variables of environments/ENV.env into this
 # shell, so that base_args passes them (and, for google, the agent's own names
@@ -536,7 +580,7 @@ run_agent() (
   fi
   # LOCAL_MODE makes the agent's entrypoint scripts hand the plan to the
   # apply stage through the container's filesystem instead of a CodeBuild
-  # or Cloud Build artifact; the old all-in-one test image baked it in.
+  # or Cloud Build artifact.
   ARGS+=(-e LOCAL_MODE=true)
   local cmd=(ei-agent "$sub" -c "/conf/agents/$e/config.yaml" --prefix "$prefix" --pipeline-type=local)
   case $sub in
@@ -546,14 +590,34 @@ run_agent() (
   [ "$steps" != all ] && cmd+=(--steps "$steps")
   mkdir -p "logs/$e"
   log "Agent $sub for $e (steps: $steps)"
+  # One container, two users: root prepares it (AGENT_PREPARE), then the
+  # agent runs in it as the executor, so that what it writes into the
+  # checkout is the executor's. The container sleeps as its main process and
+  # is removed when this function is done, however it ends.
+  local image name i run_args=()
+  image=$(agent_image "$e")
+  for ((i = 0; i < ${#ARGS[@]}; i++)); do
+    case "${ARGS[$i]}" in
+      --rm) ;;
+      --user) i=$((i + 1)) ;;
+      *) run_args+=("${ARGS[$i]}") ;;
+    esac
+  done
+  name="infralib-agent-$e-$$-$RANDOM"
+  trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+  docker run -d --name "$name" "${run_args[@]}" --user 0:0 --entrypoint sleep "$image" 86400 >/dev/null \
+    || { warn "cannot start the agent container of $e from $image"; return 1; }
+  docker exec --user 0:0 "$name" sh -c "$AGENT_PREPARE" \
+    || { warn "cannot prepare the agent container of $e"; return 1; }
+  local exec_args=(--user "$(id -u):$(id -g)" -e HOME=/tmp -w /conf "$name" "${cmd[@]}")
   if [ "$QUIET" = true ]; then
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$e")" "${cmd[@]:1}" >"logs/$e/agent-$sub.log" 2>&1
+    docker exec "${exec_args[@]}" >"logs/$e/agent-$sub.log" 2>&1
   else
     # A read loop rather than sed: unbuffered, so the live log in CI moves
     # line by line instead of in 4 KB blocks (the apply phase is quiet enough
     # to sit in a buffer), and without GNU options, since the script also
     # runs from the alpine images, whose sed is BusyBox.
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$e")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | prefix_lines "[$e] "
+    docker exec "${exec_args[@]}" 2>&1 | tee "logs/$e/agent-$sub.log" | prefix_lines "[$e] "
     return "${PIPESTATUS[0]}"
   fi
 )
@@ -602,12 +666,18 @@ wait_jobs() {
 
 # run_agents SUBCOMMAND: every selected environment in parallel.
 run_agents() {
-  local sub=$1 e
+  local sub=$1 e cloud
   for e in "${ENVS[@]}"; do
     pull "$(agent_image "$e")"
     mkdir -p "logs/$e"
     start_job "$e" "logs/$e/agent-$sub.rc" run_agent "$sub" "$e"
   done
+  # While the agents work, fetch the images the tests will run in. They are
+  # the agent images plus the Go toolchain and caches, so the layers pulled
+  # above are not downloaded again; an agent run takes longer than the rest.
+  if [ "$sub" = run ]; then
+    for cloud in $(clouds_of_selected); do pull_in_background "$(test_image "$cloud")"; done
+  fi
   wait_jobs "Agent $sub for"
   if [ ${#JOB_FAILED[@]} -gt 0 ]; then
     for e in "${JOB_FAILED[@]}"; do
@@ -623,8 +693,9 @@ run_agents() {
 }
 
 # ---------------------------------------------------------------- tests
-# test_image CLOUD: the image the module tests of a cloud run in: the one its
-# agents ran in, so that a run pulls one image per cloud and no more. When
+# test_image CLOUD: the image the module tests of a cloud run in: the test
+# image built on the agent image its agents ran in, so that a run pulls one
+# family of layers per cloud and no more. When
 # every selected environment of the cloud runs Kubernetes steps alone that is
 # the kubectl image, which has the framework packages of every cloud
 # compiled; with OpenTofu steps it is the cloud's own image, pulled for the
