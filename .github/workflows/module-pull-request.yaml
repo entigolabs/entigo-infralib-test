@@ -241,14 +241,14 @@ jobs:
         IFS=, read -r -a envs <<<"${ENVIRONMENTS}"
         for e in "${envs[@]}"; do [ -n "$e" ] && args="$args --env $e"; done
         echo "args=${args}" >> "$GITHUB_OUTPUT"
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       if: steps.envs.outputs.environments != ''
       with:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
         environments: ${{ steps.envs.outputs.environments }}
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@shackle-kubeconfig
       if: steps.envs.outputs.environments != '' && startsWith(matrix.module, 'modules/k8s/')
       with:
         environments: ${{ steps.envs.outputs.environments }}

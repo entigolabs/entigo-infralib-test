@@ -99,7 +99,7 @@ jobs:
         repository: entigolabs/entigo-infralib-test
         ref: ${{ github.job_workflow_sha }}
         path: .infralib-test/framework
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       if: matrix.kind == 'google' || matrix.kind == 'oracle'
       with:
         google_credentials: ${{ matrix.kind == 'google' && secrets.GOOGLE_CREDENTIALS || '' }}

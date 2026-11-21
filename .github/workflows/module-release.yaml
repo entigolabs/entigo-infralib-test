@@ -172,7 +172,9 @@ jobs:
     steps:
     - uses: actions/checkout@v7
       with:
-        ref: main
+        # TEMPORARY: the branch the run was dispatched on, so that a trial
+        # branch of a module repository is what gets applied and tested.
+        ref: ${{ github.ref_name }}
     - name: Wait for other runs on the shared environments
       uses: softprops/turnstyle@v3
       with:
@@ -184,7 +186,7 @@ jobs:
     # test/module.yaml).
     - name: Fix the run date
       run: echo "INFRALIB_RUN_DATE=${INFRALIB_RUN_DATE:-$(date -u +%F)}" >> "$GITHUB_ENV"
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       with:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}
@@ -192,7 +194,7 @@ jobs:
         environments: ${{ matrix.environment }}
     - name: Apply main to ${{ matrix.environment }}
       run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ github.server_url }}/${{ github.repository }} --version main
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@shackle-kubeconfig
       with:
         environments: ${{ matrix.environment }}
     - name: Test ${{ matrix.environment }}
