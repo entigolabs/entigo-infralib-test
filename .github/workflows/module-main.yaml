@@ -172,7 +172,7 @@ jobs:
         else
           ./test.sh agent --env ${{ matrix.environment }} --source "${SOURCE}" --version main
         fi
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@shackle-kubeconfig
       with:
         environments: ${{ matrix.environment }}
     - name: Test ${{ matrix.environment }}

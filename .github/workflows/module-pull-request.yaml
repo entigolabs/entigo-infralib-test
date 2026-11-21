@@ -248,7 +248,7 @@ jobs:
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
         environments: ${{ steps.envs.outputs.environments }}
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@shackle-kubeconfig
       if: steps.envs.outputs.environments != '' && startsWith(matrix.module, 'modules/k8s/')
       with:
         environments: ${{ steps.envs.outputs.environments }}

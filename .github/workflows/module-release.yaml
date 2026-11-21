@@ -192,7 +192,7 @@ jobs:
         environments: ${{ matrix.environment }}
     - name: Apply main to ${{ matrix.environment }}
       run: ./test.sh agent --env ${{ matrix.environment }} --source ${{ github.server_url }}/${{ github.repository }} --version main
-    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@shackle-kubeconfig
       with:
         environments: ${{ matrix.environment }}
     - name: Test ${{ matrix.environment }}
