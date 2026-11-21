@@ -42,10 +42,6 @@ RUN curl -fsSL -o go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.
     && tar -C /usr/local -xzf go.tgz && rm go.tgz \
     && rm -rf /usr/local/go/test /usr/local/go/doc /usr/local/go/misc
 COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
-# shackle is the credential plugin of the kubeconfig the tests get: the
-# kubeconfig action writes users that run `shackle token <cloud>`, which mints
-# the cluster token with the container's own cloud credentials.
-COPY --from=ghcr.io/entigolabs/shackle:v0.1.2@sha256:daf73efde992cc2cb39970eeb7ee28dce6a098ed6ed9bf3daa48d70900a09f56 /usr/local/bin/shackle /usr/local/bin/shackle
 # Only the Go sources feed the cache warming, so a change to scripts or docs
 # does not recompile everything.
 COPY go.mod go.sum /opt/infralib-test/src/
