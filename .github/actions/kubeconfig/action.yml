@@ -6,7 +6,8 @@ description: >
   through the repository's test.sh, so it runs after the clusters exist (after
   the agent). EKS, GKE, OKE and AKS are covered. Every context gets the name
   the cloud's own CLI would give it (OKE: the cluster name), and its user runs
-  `shackle token <cloud>`, which the test images carry.
+  `shackle token <cloud>`; the test images have shackle from the agent images
+  they are built on.
 inputs:
   environments:
     description: comma separated environment names; empty means all
@@ -17,10 +18,10 @@ runs:
     - name: Install shackle
       shell: bash
       env:
-        SHACKLE_VERSION: v0.1.2
+        SHACKLE_VERSION: v0.1.4
         # sha256 of the release binaries, from the release's signed SHA256SUMS.
-        SHACKLE_SHA256_AMD64: 82533aa9014dba95ff90d58b56eee9562fa9838594ea9656491fe31eff29c406
-        SHACKLE_SHA256_ARM64: 10fed25d30f74babe8866673ac0054c43774fcb8fa98b4c2300d59f93861317e
+        SHACKLE_SHA256_AMD64: 91464c0af5a2c8344387043895170bc48931680473dbbfe1dce82b9337721e14
+        SHACKLE_SHA256_ARM64: c1f7f75d8df4a2075b3b7f3d5595a0230d76624109404276f5d821f3169bed86
       run: |
         set -euo pipefail
         case "$(uname -m)" in
