@@ -39,6 +39,10 @@ type generateOptions struct {
 type generateResult struct {
 	// Steps lists, per environment, the steps the agent should run; empty means all.
 	Steps map[string][]string
+	// KubernetesOnly names the environments whose steps to run are all
+	// Kubernetes (ArgoCD) steps: the agent then needs no OpenTofu and no
+	// cloud tooling, and can run in the kubectl image.
+	KubernetesOnly map[string]bool
 	// Skipped lists environments no requested module is part of.
 	Skipped []string
 }
@@ -109,11 +113,17 @@ func generateCommand(args []string) error {
 			fmt.Printf("%s skip\n", e.Name)
 			continue
 		}
+		// The third column is the kind of the steps to run: k8s when every
+		// one is a Kubernetes (ArgoCD) step, any otherwise.
+		kind := "any"
+		if result.KubernetesOnly[e.Name] {
+			kind = "k8s"
+		}
 		steps := result.Steps[e.Name]
 		if len(steps) == 0 {
-			fmt.Printf("%s all\n", e.Name)
+			fmt.Printf("%s all %s\n", e.Name, kind)
 		} else {
-			fmt.Printf("%s %s\n", e.Name, strings.Join(steps, ","))
+			fmt.Printf("%s %s %s\n", e.Name, strings.Join(steps, ","), kind)
 		}
 	}
 	return nil
@@ -121,31 +131,32 @@ func generateCommand(args []string) error {
 
 // generate writes one agent configuration per environment.
 func generate(opts generateOptions) (*generateResult, error) {
-	result := &generateResult{Steps: map[string][]string{}}
+	result := &generateResult{Steps: map[string][]string{}, KubernetesOnly: map[string]bool{}}
 	for _, e := range opts.Environments {
 		if len(opts.Modules) > 0 && !anyMember(opts.Config, e, opts.Modules) {
 			result.Skipped = append(result.Skipped, e.Name)
 			continue
 		}
-		steps, err := generateEnvironment(opts, e)
+		steps, kubernetesOnly, err := generateEnvironment(opts, e)
 		if err != nil {
 			return nil, fmt.Errorf("environment %s: %w", e.Name, err)
 		}
 		result.Steps[e.Name] = steps
+		result.KubernetesOnly[e.Name] = kubernetesOnly
 	}
 	return result, nil
 }
 
 // generateEnvironment patches a copy of the environment's agent config and
 // writes it to agents/<env>/config.yaml. It returns the steps to run (nil
-// for all). Fields the framework does not model pass through untouched;
+// for all) and whether they are all Kubernetes (ArgoCD) steps. Fields the framework does not model pass through untouched;
 // the approval fields default to never, since nobody is there to answer.
-func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, error) {
+func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, bool, error) {
 	config := opts.Config
 	raw := e.Raw()
 	rawSteps, _ := raw["steps"].([]any)
 	if len(rawSteps) != len(e.Steps) {
-		return nil, fmt.Errorf("%s: steps could not be read", e.Path)
+		return nil, false, fmt.Errorf("%s: steps could not be read", e.Path)
 	}
 
 	var local, external []string // module sources by origin, for the source include list
@@ -163,7 +174,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		for j, ref := range step.Modules {
 			m, err := config.Resolve(ref)
 			if err != nil {
-				return nil, fmt.Errorf("step %s: %w", step.Name, err)
+				return nil, false, fmt.Errorf("step %s: %w", step.Name, err)
 			}
 			if !m.Meta.RunsOn(opts.Date) && !underTest(opts.Modules, m.Source) {
 				fmt.Fprintf(os.Stderr, "%s: %s is left out of step %s today (run_days: %s)\n", e.Name, m.Source, step.Name, m.Meta.RunDays)
@@ -177,7 +188,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			}
 			patched, err := agentModule(config, e, m)
 			if err != nil {
-				return nil, fmt.Errorf("step %s: %w", step.Name, err)
+				return nil, false, fmt.Errorf("step %s: %w", step.Name, err)
 			}
 			rawModule, _ := rawModules[j].(map[string]any)
 			rawModule["name"] = patched.Name
@@ -187,13 +198,13 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		}
 		if len(keptModules) != len(rawModules) {
 			if len(keptModules) == 0 {
-				return nil, fmt.Errorf("step %s has no module left today: a module with run_days cannot be the only one of its step", step.Name)
+				return nil, false, fmt.Errorf("step %s has no module left today: a module with run_days cannot be the only one of its step", step.Name)
 			}
 			rawStep["modules"] = keptModules
 		}
 	}
 	if len(external) > 0 && len(e.Sources) == 0 {
-		return nil, fmt.Errorf("modules %s are not part of this repository; add the source that provides them under sources: in %s", strings.Join(external, ", "), e.Path)
+		return nil, false, fmt.Errorf("modules %s are not part of this repository; add the source that provides them under sources: in %s", strings.Join(external, ", "), e.Path)
 	}
 
 	// This repository is the first source. When other sources provide
@@ -211,6 +222,9 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	// config untouched so that every template reference resolves and the
 	// state keeps every module, but only the per-module steps run.
 	var runSteps []string
+	// Whether every step to run is a Kubernetes one. A run of all steps
+	// never is: the regular steps include OpenTofu.
+	kubernetesOnly := true
 	// The agent rejects a config with two modules of one type marked default
 	// ("multiple default modules found with type aws-alb"), so each source is
 	// marked once: by the environment itself, or else by the first per-module
@@ -244,6 +258,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 			// of its own would be a second state creating the resources twice.
 			// The other modules of the step are applied with it.
 			runSteps = appendUnique(runSteps, home.Step.Name)
+			kubernetesOnly = false
 			continue
 		}
 		name := fmt.Sprintf("%s-%s", opts.StepPrefix, m.Name)
@@ -253,7 +268,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		rawStep["name"] = name
 		own, err := agentModule(config, e, home.Module)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		// A k8s module gets a branch-prefixed application name so it lives
 		// next to the regular step's deployment instead of replacing it. In
@@ -282,7 +297,7 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		if gw, ok := config.GatewayModule(e); ok && gw.Step.Name == home.Step.Name && gw.Module.Source != m.Source && home.Step.Type == env.StepTypeArgoCD {
 			def, err := agentModule(config, e, gw.Module)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			markDefault(&def)
 			modules = append(modules, toRaw(def))
@@ -290,33 +305,36 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 		rawStep["modules"] = modules
 		rawSteps = append(rawSteps, rawStep)
 		runSteps = appendUnique(runSteps, name)
+		if home.Step.Type != env.StepTypeArgoCD {
+			kubernetesOnly = false
+		}
 	}
 	raw["steps"] = rawSteps
 
 	data, err := yaml.Marshal(raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	dir := filepath.Join(opts.OutDir, e.Name)
 	if err := os.RemoveAll(dir); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// The agent picks up a ca-certificates directory next to its config and
 	// hands the files to every step, where the base image trusts them.
 	if len(e.CACertificates) > 0 {
 		certs := filepath.Join(dir, env.CertsDirName)
 		if err := os.MkdirAll(certs, 0o755); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, cert := range e.CACertificates {
 			if err := os.WriteFile(filepath.Join(certs, cert.Name), cert.Content, 0o644); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 	}
@@ -325,13 +343,13 @@ func generateEnvironment(opts generateOptions, e *env.Environment) ([]string, er
 	for _, f := range e.StepFiles {
 		include := filepath.Join(dir, env.IncludeDirName, f.Step, "include")
 		if err := os.MkdirAll(include, 0o755); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := os.WriteFile(filepath.Join(include, f.Name), f.Content, 0o644); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return runSteps, nil
+	return runSteps, kubernetesOnly && len(runSteps) > 0, nil
 }
 
 // agentModule is the agent config entry of a module in an environment, inputs included.

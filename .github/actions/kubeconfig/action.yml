@@ -1,13 +1,13 @@
 name: Kubeconfig for the environments' clusters
 description: >
-  The executor builds the kubeconfig with shackle
-  (https://github.com/entigolabs/shackle), one static binary for every cloud,
-  so no cloud CLI and no cloud image is needed for it. Reads the environments
-  through the repository's test.sh, so it runs after the clusters exist (after
-  the agent). EKS, GKE, OKE and AKS are covered. Every context gets the name
-  the cloud's own CLI would give it (OKE: the cluster name), and its user runs
-  `shackle token <cloud>`; the test images have shackle from the agent images
-  they are built on.
+  The orchestrator builds the kubeconfig (./test.sh kubeconfig) with shackle
+  (https://github.com/entigolabs/shackle) from the cli image, which every run
+  has pulled already: one static binary for every cloud, so no cloud CLI and
+  no cloud image is needed for it. Runs after the clusters exist (after the
+  agent). EKS, GKE, OKE and AKS are covered. The contexts land in
+  .infralib-test/kubeconfig, where the test containers pick them up; every
+  context gets the name the cloud's own CLI would give it (OKE: the cluster
+  name), and its user runs `shackle token <cloud>`, which the images have.
 inputs:
   environments:
     description: comma separated environment names; empty means all
@@ -15,84 +15,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install shackle
-      shell: bash
-      env:
-        SHACKLE_VERSION: v0.1.4
-        # sha256 of the release binaries, from the release's signed SHA256SUMS.
-        SHACKLE_SHA256_AMD64: 91464c0af5a2c8344387043895170bc48931680473dbbfe1dce82b9337721e14
-        SHACKLE_SHA256_ARM64: c1f7f75d8df4a2075b3b7f3d5595a0230d76624109404276f5d821f3169bed86
-      run: |
-        set -euo pipefail
-        case "$(uname -m)" in
-          x86_64)        arch=amd64; sum="$SHACKLE_SHA256_AMD64" ;;
-          aarch64|arm64) arch=arm64; sum="$SHACKLE_SHA256_ARM64" ;;
-          *) echo "::error::no shackle binary for $(uname -m)"; exit 1 ;;
-        esac
-        dir="${RUNNER_TEMP:-/tmp}/shackle"
-        mkdir -p "$dir"
-        curl -fsSL --retry 3 -o "$dir/shackle" \
-          "https://github.com/entigolabs/shackle/releases/download/${SHACKLE_VERSION}/shackle-linux-${arch}"
-        echo "${sum}  ${dir}/shackle" | sha256sum --check --quiet
-        chmod +x "$dir/shackle"
-        # On the PATH of the later steps too: the kubeconfig runs it for tokens.
-        echo "$dir" >> "$GITHUB_PATH"
-        "$dir/shackle" version
     - shell: bash
       env:
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
-        kube="${KUBECONFIG:-$HOME/.kube/config}"
-        # The Oracle configuration the credentials action wrote; shackle reads
-        # the variable the oci CLI reads.
-        export OCI_CLI_CONFIG_FILE="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
-        # Region, project and compartment are the environment's own (the
-        # executor's variables with environments/<env>.env applied), so an
-        # environment in another region gets its cluster from there; an
-        # empty column falls back to the executor's variable. awk rewrites
-        # the separator to one bash's read does not treat as whitespace, so
-        # an empty column (zone, project, a region an older cli image did
-        # not report) does not shift the cluster column.
-        ./test.sh envs --tsv | awk -F'\t' -v OFS='|' '{print $1, $2, $3, $4, $6, $7, $8}' | while IFS='|' read -r name cloud prefix region project compartment cluster; do
-          if [ -n "${ENVIRONMENTS}" ]; then
-            case ",${ENVIRONMENTS}," in *",${name},"*) ;; *) continue ;; esac
-          fi
-          [ -n "$cluster" ] || continue
-          case "$cloud" in
-            aws) region="${region:-${AWS_REGION:-}}" ;;
-            google) region="${region:-${GOOGLE_REGION:-}}"; project="${project:-${GOOGLE_PROJECT:-}}" ;;
-            oracle) region="${region:-${OCI_REGION:-}}"; compartment="${compartment:-${OCI_COMPARTMENT_ID:-}}" ;;
-            azure) region="${region:-${AZURE_LOCATION:-}}" ;;
-          esac
-          echo "kubeconfig for $name: cluster $cluster in $region"
-          # A cluster that does not exist (yet) is a warning, not a failure:
-          # terraform module tests need no cluster, and a k8s test that does
-          # fails on its own with the command that would have created the
-          # context.
-          case "$cloud" in
-            aws)
-              [ -n "${AWS_ACCESS_KEY_ID:-}" ] || continue
-              shackle kubeconfig aws --cluster "$cluster" --region "$region" --kubeconfig "$kube" \
-                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
-            google)
-              [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || continue
-              shackle kubeconfig google --cluster "$cluster" --region "$region" --project "$project" --kubeconfig "$kube" \
-                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
-            oracle)
-              [ -n "$compartment" ] && [ -f "$OCI_CLI_CONFIG_FILE" ] || continue
-              # The public endpoint: the runner is outside the VCN.
-              shackle kubeconfig oracle --cluster "$cluster" --region "$region" --compartment "$compartment" --kubeconfig "$kube" \
-                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
-            azure)
-              [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_CLIENT_SECRET:-}" ] || continue
-              # The cluster lives in the agent's resource group. The user of
-              # the kubeconfig asks Entra for a token as the service
-              # principal in AZURE_CLIENT_ID, AZURE_TENANT_ID and
-              # AZURE_CLIENT_SECRET, which the orchestrator hands the test
-              # container.
-              shackle kubeconfig azure --cluster "$cluster" --subscription "${AZURE_SUBSCRIPTION_ID}" \
-                --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${region}}" --kubeconfig "$kube" \
-                || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
-          esac
-        done
+        args=()
+        IFS=, read -r -a envs <<<"${ENVIRONMENTS}"
+        for e in "${envs[@]}"; do [ -n "$e" ] && args+=(--env "$e"); done
+        ./test.sh kubeconfig "${args[@]}"

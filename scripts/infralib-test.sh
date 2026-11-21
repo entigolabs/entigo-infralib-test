@@ -45,9 +45,9 @@ commands:
              the vendored modules of the given modules (all without
              arguments) are what vendor.yaml and vendor.lock say
              (scripts/vendor.sh)
-  kubeconfig contexts for the selected environments' clusters, written by the
-             cloud CLI of each environment's image to .infralib-test/kubeconfig,
-             which the tests then use (KUBECONFIG in the shell still wins)
+  kubeconfig contexts for the selected environments' clusters, written by
+             shackle from the cli image to .infralib-test/kubeconfig, which
+             the tests then use (KUBECONFIG in the shell still wins)
   nuke       the nuke script with its arguments (test.sh nuke aws --dry-run):
              everything in the cloud's account that nuke/<cloud>.yaml does not
              keep goes (scripts/nuke.sh)
@@ -125,10 +125,8 @@ environment variables:
                               azure service principal; AZURE_CONFIG_DIR (default ~/.azure)
                               is mounted when present, for az logins
   AZURE_RESOURCE_GROUP        pre-made resource group of the agent (default <prefix>-<location>)
-  KUBECONFIG                  kubeconfig holding the environments' cluster contexts
-                              (aws eks update-kubeconfig / gcloud container clusters
-                              get-credentials / oci ce cluster create-kubeconfig /
-                              az aks get-credentials + kubelogin convert-kubeconfig)
+  KUBECONFIG                  kubeconfig holding the environments' cluster contexts,
+                              instead of the one the kubeconfig command writes
 USAGE
 }
 
@@ -245,8 +243,8 @@ INFRALIB_RUN_DATE="${INFRALIB_RUN_DATE:-$(date -u +%F)}"
 # read-only mount; the paths inside the container are fixed and announced
 # through the variables the tools read, so HOME inside the container does not
 # matter. ROLE is "test" or "agent": only test containers get the executor's
-# kubeconfig; the agent builds its own with the cloud CLI (aws eks
-# update-kubeconfig and friends) and must not be pointed at a read-only one.
+# kubeconfig; the agent's pipeline scripts build their own (shackle
+# kubeconfig) and must not be pointed at a read-only one.
 base_args() {
   local cloud=$1 role=${2:-test}
   ARGS=(--rm -v "$ROOT:/conf" -w /conf --user "$(id -u):$(id -g)" -e HOME=/tmp
@@ -422,7 +420,9 @@ step_prefix() {
 
 # ---------------------------------------------------------------- generate
 # Writes agents/<env>/config.yaml for the selected environments and fills
-# STEPS_<env> with the steps the agent should run ("all", or a list).
+# STEPS_<env> with the steps the agent should run ("all", or a list) and
+# KIND_<env> with their kind: "k8s" when every one is a Kubernetes (ArgoCD)
+# step, "any" otherwise.
 generate() {
   local e args=()
   for e in "${ENVS[@]}"; do args+=(-env "$e"); done
@@ -447,8 +447,11 @@ generate() {
     set -- $line
     case "$2" in
       skip) warn "Skipping $1: its steps list none of the requested modules" ;;
-      *) steps=$2; [ "$steps" = all ] && [ -n "$ONLY_STEPS" ] && steps=$ONLY_STEPS
-         declare -g "STEPS_${1//-/_}=$steps"; SELECTED+=("$1"); echo "    $1: steps $steps" >&2 ;;
+      *) steps=$2; kind=${3:-any}
+         # --steps names regular steps, of whatever type.
+         if [ "$steps" = all ] && [ -n "$ONLY_STEPS" ]; then steps=$ONLY_STEPS; kind=any; fi
+         declare -g "STEPS_${1//-/_}=$steps"; declare -g "KIND_${1//-/_}=$kind"
+         SELECTED+=("$1"); echo "    $1: steps $steps" >&2 ;;
     esac
   done <<<"$out"
   ENVS=("${SELECTED[@]}")
@@ -486,7 +489,21 @@ module_source() {
 }
 
 # ---------------------------------------------------------------- agent
-agent_image() { echo "${INFRALIB_AGENT_IMAGE:-$(image_for "$1")}"; }
+# agent_image ENV: the image the environment's agent runs in. A run of
+# Kubernetes (ArgoCD) steps alone uses the kubectl image, one for every cloud:
+# the steps reach the cluster, the registry and the bucket with shackle and
+# need no cloud tooling. Anything else has OpenTofu steps and runs in the
+# cloud's own image. INFRALIB_AGENT_IMAGE overrides both.
+agent_image() {
+  local kind="KIND_${1//-/_}"
+  if [ -n "${INFRALIB_AGENT_IMAGE:-}" ]; then
+    echo "$INFRALIB_AGENT_IMAGE"
+  elif [ "${!kind:-any}" = k8s ]; then
+    image_for kubectl
+  else
+    image_for "$(env_cloud "$1")"
+  fi
+}
 
 # apply_overrides ENV: export the variables of environments/ENV.env into this
 # shell, so that base_args passes them (and, for google, the agent's own names
@@ -530,13 +547,13 @@ run_agent() (
   mkdir -p "logs/$e"
   log "Agent $sub for $e (steps: $steps)"
   if [ "$QUIET" = true ]; then
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" >"logs/$e/agent-$sub.log" 2>&1
+    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$e")" "${cmd[@]:1}" >"logs/$e/agent-$sub.log" 2>&1
   else
     # A read loop rather than sed: unbuffered, so the live log in CI moves
     # line by line instead of in 4 KB blocks (the apply phase is quiet enough
     # to sit in a buffer), and without GNU options, since the script also
     # runs from the alpine images, whose sed is BusyBox.
-    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$cloud")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | prefix_lines "[$e] "
+    docker run "${ARGS[@]}" --entrypoint "${cmd[0]}" "$(agent_image "$e")" "${cmd[@]:1}" 2>&1 | tee "logs/$e/agent-$sub.log" | prefix_lines "[$e] "
     return "${PIPESTATUS[0]}"
   fi
 )
@@ -587,7 +604,7 @@ wait_jobs() {
 run_agents() {
   local sub=$1 e
   for e in "${ENVS[@]}"; do
-    pull "$(agent_image "$(env_cloud "$e")")"
+    pull "$(agent_image "$e")"
     mkdir -p "logs/$e"
     start_job "$e" "logs/$e/agent-$sub.rc" run_agent "$sub" "$e"
   done
@@ -606,8 +623,11 @@ run_agents() {
 }
 
 # ---------------------------------------------------------------- tests
-# run_tests_on CLOUD PREFIX: infralib-test run in the cloud's test image for
-# the selected environments of that cloud. The full per-module logs go to
+# run_tests_on CLOUD PREFIX: infralib-test run for the selected environments
+# of that cloud, in the kubectl test image with the cloud's credentials. The
+# tests are Go code that talks to the cluster and to the cloud's API; the one
+# image has the framework packages of every cloud compiled, so none of the
+# cloud images is pulled for them. The full per-module logs go to
 # logs/<cloud>/ and the command's own output to logs/<cloud>/tests.log, so
 # two clouds testing the same module at the same time never write the same
 # file. The body is a subshell so base_args' ARGS stay with this cloud.
@@ -617,12 +637,13 @@ run_tests_on() (
   [ -n "$RUN_FILTER" ] && args+=(-run "$RUN_FILTER")
   [ "$VERBOSE" = true ] && args+=(-verbose)
   for e in "${ENVS[@]}"; do [ "$(env_cloud "$e")" = "$cloud" ] && args+=(-env "$e"); done
-  run_in "$cloud" -- infralib-test run "${args[@]}" "${MODULES[@]}" 2>&1 | tee "logs/$cloud/tests.log" | prefix_lines "$prefix"
+  base_args "$cloud"
+  docker run "${ARGS[@]}" --entrypoint infralib-test "$(image_for kubectl)" run "${args[@]}" "${MODULES[@]}" 2>&1 | tee "logs/$cloud/tests.log" | prefix_lines "$prefix"
   return "${PIPESTATUS[0]}"
 )
 
 # run_tests: the module tests of every selected cloud at once, one container
-# per cloud image, the way the agents run one per environment. The
+# per cloud, the way the agents run one per environment. The
 # environments of one cloud are parallel subtests inside its container. With
 # several clouds every line is prefixed with its cloud, as the agents' are
 # with their environment; the test containers share the checkout, and what
@@ -630,7 +651,7 @@ run_tests_on() (
 run_tests() {
   local clouds=() cloud prefix
   mapfile -t clouds < <(clouds_of_selected)
-  for cloud in "${clouds[@]}"; do pull "$(image_for "$cloud")"; done
+  pull "$(image_for kubectl)"
   for cloud in "${clouds[@]}"; do
     prefix=""; [ ${#clouds[@]} -gt 1 ] && prefix="[$cloud] "
     mkdir -p "logs/$cloud"
@@ -645,15 +666,15 @@ run_tests() {
 }
 
 # ---------------------------------------------------------------- kubeconfig
-# write_kubeconfig ENV: the cloud CLI of the environment's image adds the
-# context of the environment's cluster to .infralib-test/kubeconfig, the file
-# the test containers then get. A cluster that does not exist (yet) is a
+# write_kubeconfig ENV: shackle, from the cli image, adds the context of the
+# environment's cluster to .infralib-test/kubeconfig, the file the test
+# containers then get. One static binary does it for every cloud, so no cloud
+# image is pulled for a kubeconfig. A cluster that does not exist (yet) is a
 # warning: terraform module tests need no cluster, and a k8s test that does
 # fails on its own. Region, project and compartment are the environment's
-# own (the shell's variables with environments/<env>.env applied). The OKE
-# context is renamed to the cluster name, since oci names it after the
-# cluster OCID; the AKS kubeconfig is converted to exec kubelogin as the
-# service principal, after an az login of its own.
+# own (the shell's variables with environments/<env>.env applied). Every
+# context gets the name the cloud's own CLI would give it (OKE: the cluster
+# name), and its user runs `shackle token <cloud>`, which the images have.
 write_kubeconfig() (
   local e=$1 cloud region project compartment cluster prefix
   cloud=$(env_cloud "$e"); prefix=$(env_prefix "$e")
@@ -661,27 +682,22 @@ write_kubeconfig() (
   [ -n "$cluster" ] || { log "No cluster module in $e, no kubeconfig"; return 0; }
   apply_overrides "$e"
   base_args "$cloud" agent
-  ARGS+=(-e "KUBECONFIG=/conf/$KUBECONFIG_FILE")
-  local image; image=$(image_for "$cloud")
-  local missing="no kubeconfig for $e: cluster $cluster is not available"
-  log "kubeconfig for $e: cluster $cluster in ${region:-?}"
+  local args=(kubeconfig "$cloud" --cluster "$cluster" --kubeconfig "/conf/$KUBECONFIG_FILE")
   case $cloud in
-    aws)
-      docker run "${ARGS[@]}" --entrypoint aws "$image" eks update-kubeconfig --region "$region" --name "$cluster" --kubeconfig "/conf/$KUBECONFIG_FILE" \
-        || warn "$missing" ;;
-    google)
-      docker run "${ARGS[@]}" --entrypoint gcloud "$image" container clusters get-credentials "$cluster" --region "$region" --project "$project" \
-        || warn "$missing" ;;
+    aws)    args+=(--region "$region") ;;
+    google) args+=(--region "$region" --project "$project") ;;
     oracle)
-      local id
-      id=$(docker run "${ARGS[@]}" --entrypoint oci "$image" ce cluster list --compartment-id "$compartment" --region "$region" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
-      if [ -z "$id" ] || [ "$id" = null ]; then warn "$missing"; return 0; fi
-      docker run "${ARGS[@]}" --entrypoint sh "$image" -c "oci ce cluster create-kubeconfig --cluster-id '$id' --region '$region' --file \"\$KUBECONFIG\" --token-version 2.0.0 --kube-endpoint ${OCI_KUBE_ENDPOINT:-PUBLIC_ENDPOINT} && kubectl config rename-context \"\$(kubectl config current-context)\" '$cluster'" \
-        || warn "$missing" ;;
+      args+=(--region "$region" --compartment "$compartment")
+      # The public endpoint unless told otherwise: the executor is usually
+      # outside the VCN.
+      [ "${OCI_KUBE_ENDPOINT:-PUBLIC_ENDPOINT}" = PUBLIC_ENDPOINT ] || args+=(--private-endpoint) ;;
     azure)
-      docker run "${ARGS[@]}" --entrypoint sh "$image" -c "az login --service-principal -u \"\$AZURE_CLIENT_ID\" -p \"\$AZURE_CLIENT_SECRET\" --tenant \"\$AZURE_TENANT_ID\" --output none && az account set --subscription \"\$AZURE_SUBSCRIPTION_ID\" && az aks get-credentials --resource-group '${AZURE_RESOURCE_GROUP:-${prefix}-${region}}' --name '$cluster' --file \"\$KUBECONFIG\" --overwrite-existing && kubelogin convert-kubeconfig -l spn --client-id \"\$AZURE_CLIENT_ID\" --tenant-id \"\$AZURE_TENANT_ID\" --kubeconfig \"\$KUBECONFIG\"" \
-        || warn "$missing" ;;
+      # The cluster lives in the agent's resource group.
+      args+=(--subscription "${AZURE_SUBSCRIPTION_ID:-}" --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${region}}") ;;
   esac
+  log "kubeconfig for $e: cluster $cluster in ${region:-?}"
+  docker run "${ARGS[@]}" --entrypoint shackle "$(image_for cli)" "${args[@]}" \
+    || warn "no kubeconfig for $e: cluster $cluster is not available"
 )
 
 # ---------------------------------------------------------------- commands
@@ -691,7 +707,8 @@ case $COMMAND in
     # .infralib-test/kubeconfig, where the test containers pick them up.
     select_environments
     mkdir -p "$(dirname "$KUBECONFIG_FILE")"
-    for e in "${ENVS[@]}"; do pull "$(image_for "$(env_cloud "$e")")"; write_kubeconfig "$e"; done
+    pull "$(image_for cli)"
+    for e in "${ENVS[@]}"; do write_kubeconfig "$e"; done
     log "Kubeconfig in $KUBECONFIG_FILE"
     ;;
   nuke)

@@ -36,7 +36,7 @@ jobs:
           echo "$wf for $GITHUB_SHA: $conclusion"
           [ "$conclusion" = success ] || { echo "::error::$wf has not succeeded for $GITHUB_SHA" >&2; exit 1; }
         done
-        images="cli aws google oracle azure"
+        images="cli aws google oracle azure kubectl"
         for name in $images; do
           docker manifest inspect "entigolabs/entigo-infralib-test-$name:$GITHUB_SHA" >/dev/null 2>&1 \
             || { echo "::error::entigolabs/entigo-infralib-test-$name:$GITHUB_SHA is not in the registry" >&2; exit 1; }
