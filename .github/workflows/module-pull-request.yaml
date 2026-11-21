@@ -224,7 +224,9 @@ jobs:
         # with a cli older than v0.8.6, which ignores the module argument),
         # narrowed to the ones asked for. Only their clouds get credentials
         # and only their clusters a kubeconfig: a module one cloud installs
-        # costs one cloud's logins and image pulls. The orchestrator selects
+        # costs one cloud's logins and image pulls. The kubeconfig is for
+        # k8s modules alone: the tests of the other types read the cloud's
+        # API and tofu outputs, never the cluster. The orchestrator selects
         # for itself in the test step, where an environment whose cloud has
         # no credentials is skipped with a warning rather than failing.
         selected=$(./test.sh envs --tsv "${MODULE}" | cut -f1 | while read -r name; do
@@ -247,7 +249,7 @@ jobs:
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
         environments: ${{ steps.envs.outputs.environments }}
     - uses: entigolabs/entigo-infralib-test/.github/actions/kubeconfig@main
-      if: steps.envs.outputs.environments != ''
+      if: steps.envs.outputs.environments != '' && startsWith(matrix.module, 'modules/k8s/')
       with:
         environments: ${{ steps.envs.outputs.environments }}
     - name: Test ${{ matrix.module }}
