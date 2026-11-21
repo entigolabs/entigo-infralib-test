@@ -432,6 +432,22 @@ func isSemver(v string) bool {
 	return true
 }
 
+// sameVersion reports whether go.mod's required version is the image's
+// framework version: equal, or a pseudo-version of that commit. An image
+// built from a commit knows its version as the full sha, and a pseudo-version
+// ends in the first twelve characters of it
+// (v0.9.22-0.20261121104433-14393624e9e6).
+func sameVersion(have, want string) bool {
+	if have == want || strings.Contains(have, want) {
+		return true
+	}
+	return len(want) > 12 && isHex(want) && strings.HasSuffix(have, "-"+want[:12])
+}
+
+func isHex(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789abcdef") == ""
+}
+
 // alignGoMod makes the repository's go.mod require the framework at the
 // version this image was built from, so tests compile against the framework
 // that ships in the image and the image's warmed Go cache matches. The
@@ -446,8 +462,7 @@ func alignGoMod(root, want string) error {
 	if err != nil {
 		return err
 	}
-	if have == want || strings.Contains(have, want) {
-		// Equal, or a pseudo-version that already points at this commit.
+	if sameVersion(have, want) {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "Aligning go.mod: %s %s -> %s (this image's framework version); commit go.mod and go.sum\n", frameworkModule, have, want)
@@ -484,7 +499,7 @@ func localModfile(root, want string) (string, error) {
 		return "", nil
 	}
 	have, err := frameworkRequire(root)
-	if err != nil || have != want {
+	if err != nil || !sameVersion(have, want) {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".infralib-test"), 0o755); err != nil {
