@@ -1,11 +1,12 @@
 name: Kubeconfig for the environments' clusters
 description: >
-  The executor builds the kubeconfig; the framework picks the context the
-  cloud CLI gives each environment's cluster. Reads the environments through
-  the repository's test.sh, so it runs after the clusters exist (after the
-  agent). EKS, GKE, OKE and AKS are covered. The OKE context is renamed to the
-  cluster name, since oci names it after the cluster OCID; the AKS kubeconfig
-  is converted to exec kubelogin with the service principal.
+  The executor builds the kubeconfig with shackle
+  (https://github.com/entigolabs/shackle), one static binary for every cloud,
+  so no cloud CLI and no cloud image is needed for it. Reads the environments
+  through the repository's test.sh, so it runs after the clusters exist (after
+  the agent). EKS, GKE, OKE and AKS are covered. Every context gets the name
+  the cloud's own CLI would give it (OKE: the cluster name), and its user runs
+  `shackle token <cloud>`, which the test images carry.
 inputs:
   environments:
     description: comma separated environment names; empty means all
@@ -13,46 +14,38 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install shackle
+      shell: bash
+      env:
+        SHACKLE_VERSION: v0.1.2
+        # sha256 of the release binaries, from the release's signed SHA256SUMS.
+        SHACKLE_SHA256_AMD64: 82533aa9014dba95ff90d58b56eee9562fa9838594ea9656491fe31eff29c406
+        SHACKLE_SHA256_ARM64: 10fed25d30f74babe8866673ac0054c43774fcb8fa98b4c2300d59f93861317e
+      run: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64)        arch=amd64; sum="$SHACKLE_SHA256_AMD64" ;;
+          aarch64|arm64) arch=arm64; sum="$SHACKLE_SHA256_ARM64" ;;
+          *) echo "::error::no shackle binary for $(uname -m)"; exit 1 ;;
+        esac
+        dir="${RUNNER_TEMP:-/tmp}/shackle"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "$dir/shackle" \
+          "https://github.com/entigolabs/shackle/releases/download/${SHACKLE_VERSION}/shackle-linux-${arch}"
+        echo "${sum}  ${dir}/shackle" | sha256sum --check --quiet
+        chmod +x "$dir/shackle"
+        # On the PATH of the later steps too: the kubeconfig runs it for tokens.
+        echo "$dir" >> "$GITHUB_PATH"
+        "$dir/shackle" version
     - shell: bash
       env:
         ENVIRONMENTS: ${{ inputs.environments }}
       run: |
         set -euo pipefail
-        # gcloud and oci run from the test images: the runner has no oci, and
-        # the gcloud configuration was written by the image's gcloud (see the
-        # credentials action). Config directories are mounted at their own
-        # paths (key_file= in the oci config is absolute) and so is the
-        # kubeconfig; kubectl on the runner then renames the OKE context.
-        version=$(grep -oE 'INFRALIB_TEST_VERSION:-v[0-9.]+' test.sh 2>/dev/null | cut -d- -f2 || true)
         kube="${KUBECONFIG:-$HOME/.kube/config}"
-        mkdir -p "$(dirname "$kube")"
-        gcloud() {
-          local cfg="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
-          docker run --rm --entrypoint gcloud --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e CLOUDSDK_CONFIG="$cfg" \
-            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$cfg":"$cfg" \
-            "entigolabs/entigo-infralib-test-google:${version:-latest}" "$@"
-        }
-        oci() {
-          local config="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
-          docker run --rm --entrypoint oci --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" \
-            -v "$(dirname "$config")":"$(dirname "$config")":ro -e OCI_CONFIG_FILE="$config" \
-            -v "$(dirname "$kube")":"$(dirname "$kube")" \
-            "entigolabs/entigo-infralib-test-oracle:${version:-latest}" "$@"
-        }
-        # az and kubelogin run from the azure test image with a login of
-        # their own in a temporary config dir: nothing else needs an az
-        # login, the SDKs, the agent and kubelogin read AZURE_* directly.
-        azure_cfg="${RUNNER_TEMP:-/tmp}/infralib-azure"
-        azure_tool() {
-          local tool=$1; shift
-          mkdir -p "$azure_cfg"
-          docker run --rm --entrypoint "$tool" --user "$(id -u):$(id -g)" -e KUBECONFIG="$kube" -e AZURE_CONFIG_DIR="$azure_cfg" \
-            -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET \
-            -v "$(dirname "$kube")":"$(dirname "$kube")" -v "$azure_cfg":"$azure_cfg" \
-            "entigolabs/entigo-infralib-test-azure:${version:-latest}" "$@"
-        }
-        az() { azure_tool az "$@"; }
-        kubelogin() { azure_tool kubelogin "$@"; }
+        # The Oracle configuration the credentials action wrote; shackle reads
+        # the variable the oci CLI reads.
+        export OCI_CLI_CONFIG_FILE="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
         # Region, project and compartment are the environment's own (the
         # executor's variables with environments/<env>.env applied), so an
         # environment in another region gets its cluster from there; an
@@ -72,7 +65,6 @@ runs:
             azure) region="${region:-${AZURE_LOCATION:-}}" ;;
           esac
           echo "kubeconfig for $name: cluster $cluster in $region"
-          # The cloud CLI prints the context it added.
           # A cluster that does not exist (yet) is a warning, not a failure:
           # terraform module tests need no cluster, and a k8s test that does
           # fails on its own with the command that would have created the
@@ -80,32 +72,26 @@ runs:
           case "$cloud" in
             aws)
               [ -n "${AWS_ACCESS_KEY_ID:-}" ] || continue
-              aws eks update-kubeconfig --region "$region" --name "$cluster" \
+              shackle kubeconfig aws --cluster "$cluster" --region "$region" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             google)
               [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || continue
-              gcloud container clusters get-credentials "$cluster" --region "$region" --project "$project" \
+              shackle kubeconfig google --cluster "$cluster" --region "$region" --project "$project" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             oracle)
-              [ -n "$compartment" ] && [ -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ] || continue
-              id=$(oci ce cluster list --compartment-id "$compartment" --region "$region" --name "$cluster" --lifecycle-state ACTIVE --query 'data[0].id' --raw-output 2>/dev/null || true)
-              if [ -z "$id" ] || [ "$id" = null ]; then echo "::warning::no kubeconfig for $name: cluster $cluster is not available"; continue; fi
-              oci ce cluster create-kubeconfig --cluster-id "$id" --region "$region" --file "$kube" \
-                --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT \
-                && kubectl config rename-context "$(kubectl config current-context)" "$cluster" \
+              [ -n "$compartment" ] && [ -f "$OCI_CLI_CONFIG_FILE" ] || continue
+              # The public endpoint: the runner is outside the VCN.
+              shackle kubeconfig oracle --cluster "$cluster" --region "$region" --compartment "$compartment" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
             azure)
               [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] && [ -n "${AZURE_CLIENT_SECRET:-}" ] || continue
-              # The cluster lives in the agent's resource group. The converted
-              # kubeconfig execs kubelogin as the service principal: client and
-              # tenant id go into the kubeconfig (convert-kubeconfig insists on
-              # them as flags), the secret comes from the
-              # AAD_SERVICE_PRINCIPAL_CLIENT_SECRET variable the orchestrator
-              # hands the test container.
-              az login --service-principal -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}" --tenant "${AZURE_TENANT_ID}" --output none \
-                && az account set --subscription "${AZURE_SUBSCRIPTION_ID}" \
-                && az aks get-credentials --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${region}}" --name "$cluster" --file "$kube" --overwrite-existing \
-                && kubelogin convert-kubeconfig -l spn --client-id "${AZURE_CLIENT_ID}" --tenant-id "${AZURE_TENANT_ID}" --kubeconfig "$kube" \
+              # The cluster lives in the agent's resource group. The user of
+              # the kubeconfig asks Entra for a token as the service
+              # principal in AZURE_CLIENT_ID, AZURE_TENANT_ID and
+              # AZURE_CLIENT_SECRET, which the orchestrator hands the test
+              # container.
+              shackle kubeconfig azure --cluster "$cluster" --subscription "${AZURE_SUBSCRIPTION_ID}" \
+                --resource-group "${AZURE_RESOURCE_GROUP:-${prefix}-${region}}" --kubeconfig "$kube" \
                 || echo "::warning::no kubeconfig for $name: cluster $cluster is not available" ;;
           esac
         done
