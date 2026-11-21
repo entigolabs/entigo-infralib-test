@@ -145,7 +145,7 @@ jobs:
     # test/module.yaml).
     - name: Fix the run date
       run: echo "INFRALIB_RUN_DATE=${INFRALIB_RUN_DATE:-$(date -u +%F)}" >> "$GITHUB_ENV"
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       with:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}
         oci_config: ${{ secrets.OCI_CONFIG }}

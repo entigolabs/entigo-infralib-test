@@ -241,7 +241,7 @@ jobs:
         IFS=, read -r -a envs <<<"${ENVIRONMENTS}"
         for e in "${envs[@]}"; do [ -n "$e" ] && args="$args --env $e"; done
         echo "args=${args}" >> "$GITHUB_OUTPUT"
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       if: steps.envs.outputs.environments != ''
       with:
         google_credentials: ${{ secrets.GOOGLE_CREDENTIALS }}

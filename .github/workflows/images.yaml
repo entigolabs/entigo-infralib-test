@@ -91,7 +91,7 @@ jobs:
         outputs: ${{ env.PUBLISH == 'true' && format('type=image,name=entigolabs/entigo-infralib-test-{0},push-by-digest=true,name-canonical=true,push=true', matrix.cloud) || 'type=cacheonly' }}
         build-args: |
           VERSION=${{ github.event.pull_request.head.sha || github.sha }}
-          BASE_TAG=latest
+          BASE_TAG=dev
         provenance: ${{ env.PUBLISH == 'true' && 'mode=max' || 'false' }}
         sbom: ${{ env.PUBLISH == 'true' }}
         cache-from: type=gha,scope=${{ matrix.cloud }}-${{ matrix.arch }}

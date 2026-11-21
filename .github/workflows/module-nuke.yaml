@@ -134,7 +134,7 @@ jobs:
         repository: entigolabs/entigo-infralib-test
         ref: ${{ github.job_workflow_sha }}
         path: .infralib-test/framework
-    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@main
+    - uses: entigolabs/entigo-infralib-test/.github/actions/credentials@shackle-kubeconfig
       if: matrix.cloud == 'oracle'
       with:
         oci_config: ${{ secrets.OCI_CONFIG }}
