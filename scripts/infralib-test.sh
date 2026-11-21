@@ -623,11 +623,25 @@ run_agents() {
 }
 
 # ---------------------------------------------------------------- tests
+# test_image CLOUD: the image the module tests of a cloud run in: the one its
+# agents ran in, so that a run pulls one image per cloud and no more. When
+# every selected environment of the cloud runs Kubernetes steps alone that is
+# the kubectl image, which has the framework packages of every cloud
+# compiled; with OpenTofu steps it is the cloud's own image, pulled for the
+# agent already.
+test_image() {
+  local cloud=$1 e kind
+  for e in "${ENVS[@]}"; do
+    [ "$(env_cloud "$e")" = "$cloud" ] || continue
+    kind="KIND_${e//-/_}"
+    [ "${!kind:-any}" = k8s ] || { image_for "$cloud"; return; }
+  done
+  image_for kubectl
+}
+
 # run_tests_on CLOUD PREFIX: infralib-test run for the selected environments
-# of that cloud, in the kubectl test image with the cloud's credentials. The
-# tests are Go code that talks to the cluster and to the cloud's API; the one
-# image has the framework packages of every cloud compiled, so none of the
-# cloud images is pulled for them. The full per-module logs go to
+# of that cloud, in the cloud's test image (see test_image) with the cloud's
+# credentials. The full per-module logs go to
 # logs/<cloud>/ and the command's own output to logs/<cloud>/tests.log, so
 # two clouds testing the same module at the same time never write the same
 # file. The body is a subshell so base_args' ARGS stay with this cloud.
@@ -638,7 +652,7 @@ run_tests_on() (
   [ "$VERBOSE" = true ] && args+=(-verbose)
   for e in "${ENVS[@]}"; do [ "$(env_cloud "$e")" = "$cloud" ] && args+=(-env "$e"); done
   base_args "$cloud"
-  docker run "${ARGS[@]}" --entrypoint infralib-test "$(image_for kubectl)" run "${args[@]}" "${MODULES[@]}" 2>&1 | tee "logs/$cloud/tests.log" | prefix_lines "$prefix"
+  docker run "${ARGS[@]}" --entrypoint infralib-test "$(test_image "$cloud")" run "${args[@]}" "${MODULES[@]}" 2>&1 | tee "logs/$cloud/tests.log" | prefix_lines "$prefix"
   return "${PIPESTATUS[0]}"
 )
 
@@ -651,7 +665,7 @@ run_tests_on() (
 run_tests() {
   local clouds=() cloud prefix
   mapfile -t clouds < <(clouds_of_selected)
-  pull "$(image_for kubectl)"
+  for cloud in "${clouds[@]}"; do pull "$(test_image "$cloud")"; done
   for cloud in "${clouds[@]}"; do
     prefix=""; [ ${#clouds[@]} -gt 1 ] && prefix="[$cloud] "
     mkdir -p "logs/$cloud"

@@ -1,14 +1,14 @@
-# Test image for Kubernetes steps and for the module tests of every cloud.
+# Test image for Kubernetes steps and their module tests, on every cloud.
 # Built from the repository root:
 #   docker buildx build -f images/kubectl/Dockerfile -t entigolabs/entigo-infralib-test-kubectl:dev .
 #
 # It is the agent's Kubernetes image (entigolabs/entigo-infralib-kubectl:
 # kubectl, argocd, helm, shackle, ei-agent and its entrypoint scripts, no
 # OpenTofu and no cloud CLI) plus a Go toolchain, the infralib-test command and
-# warmed Go caches for the framework packages of every cloud. The host
-# orchestrator runs the module tests of every cloud from this one image, and
-# the agent too when all it has to run is Kubernetes (ArgoCD) steps; a run
-# with OpenTofu steps uses the cloud's own test image for the agent.
+# warmed Go caches for the framework packages of every cloud. When all the
+# agent has to run is Kubernetes (ArgoCD) steps, the host orchestrator runs
+# the agent and the module tests of every cloud from this one image; a run
+# with OpenTofu steps uses the cloud's own test image for both.
 ARG BASE_TAG=latest
 ARG GO_VERSION=1.26.8
 # The framework version this image is built from (tag, or commit sha); the
