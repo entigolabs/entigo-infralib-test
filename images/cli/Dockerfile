@@ -18,6 +18,10 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags 
 FROM alpine:3.22
 RUN apk --no-cache add bash
 COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
+# shackle (https://github.com/entigolabs/shackle) writes the kubeconfig of the
+# environments' clusters for every cloud (the kubeconfig command). The agent
+# images carry the same binary for the tokens that kubeconfig asks for.
+COPY --from=ghcr.io/entigolabs/shackle:v0.1.4@sha256:7d4629e9856d45d03625b7eea9e790afb21c5476c185bda62b8c74453702d2b4 /usr/local/bin/shackle /usr/local/bin/shackle
 COPY scripts/ /opt/infralib-test/scripts/
 COPY templates/ /opt/infralib-test/templates/
 USER 1000
