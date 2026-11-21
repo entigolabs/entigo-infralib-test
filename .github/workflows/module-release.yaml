@@ -172,7 +172,9 @@ jobs:
     steps:
     - uses: actions/checkout@v7
       with:
-        ref: main
+        # TEMPORARY: the branch the run was dispatched on, so that a trial
+        # branch of a module repository is what gets applied and tested.
+        ref: ${{ github.ref_name }}
     - name: Wait for other runs on the shared environments
       uses: softprops/turnstyle@v3
       with:
