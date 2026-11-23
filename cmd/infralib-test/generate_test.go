@@ -133,6 +133,7 @@ func TestGenerateFull(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, result.Skipped)
 	require.Empty(t, result.Steps["aws_exa"])
+	require.False(t, result.KubernetesOnly["aws_exa"], "a run of every step includes OpenTofu steps")
 
 	path := filepath.Join(out, "aws_exa", "config.yaml")
 	agent := readAgent(t, path)
@@ -186,6 +187,7 @@ func TestGenerateModuleStep(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"google_exa"}, result.Skipped, "google_exa does not list hello-world")
 	require.Equal(t, []string{"mart-foo-hello-world"}, result.Steps["aws_exa"])
+	require.True(t, result.KubernetesOnly["aws_exa"], "a k8s module's own step is all there is to run")
 
 	path := filepath.Join(out, "aws_exa", "config.yaml")
 	agent := readAgent(t, path)
@@ -232,6 +234,7 @@ func TestGenerateInPlace(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"net"}, result.Steps["aws_exa"], "a terraform module is applied inside its regular step")
+	require.False(t, result.KubernetesOnly["aws_exa"], "an OpenTofu step needs the cloud's image")
 	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
 	require.Equal(t, "net,infra,apps", strings.Join(stepNames(agent), ","), "in-place adds no step for terraform")
 	require.Equal(t, "main", agent.Sources[0].Version)

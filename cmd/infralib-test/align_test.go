@@ -50,3 +50,25 @@ func TestWantedFrameworkVersion(t *testing.T) {
 	require.False(t, isSemver("v1.24"))
 	require.False(t, isSemver("dev"))
 }
+
+func TestSameVersion(t *testing.T) {
+	const sha = "14393624e9e632e8096a8d8f78e2e7afbccf78f4"
+	for _, c := range []struct {
+		have, want string
+		same       bool
+	}{
+		{"v0.9.21", "v0.9.21", true},
+		{"v0.9.21", "v0.9.22", false},
+		// A commit build knows its version as the full sha; go.mod holds the
+		// pseudo-version of that commit.
+		{"v0.9.22-0.20261121104433-14393624e9e6", sha, true},
+		{"v0.9.22-0.20261121104433-14393624e9e6", "14393624e9e6", true},
+		{"v0.9.22-0.20261121104433-aaaaaaaaaaaa", sha, false},
+		{"v0.9.21", sha, false},
+		// A version is not a commit: no prefix games with it.
+		{"v0.9.22-0.20261121104433-14393624e9e6", "v0.9.22-0.2026", true},
+		{"v0.9.2", "v0.9.21", false},
+	} {
+		require.Equalf(t, c.same, sameVersion(c.have, c.want), "have %s want %s", c.have, c.want)
+	}
+}

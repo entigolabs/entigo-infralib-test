@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cloud: [cli, aws, google, oracle, azure]
+        cloud: [cli, aws, google, oracle, azure, kubectl]
         arch: [amd64, arm64]
         # GitHub-hosted runners of each architecture; both are 4 vCPU for a
         # public repository.
@@ -127,7 +127,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cloud: [cli, aws, google, oracle, azure]
+        cloud: [cli, aws, google, oracle, azure, kubectl]
     permissions:
       contents: read
     steps:
