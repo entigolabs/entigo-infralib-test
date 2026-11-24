@@ -109,6 +109,21 @@ publish_chart() {
   echo "Published  k8s/$name ($digest)"
 }
 
+# The time every file of a module package and the package itself carry, so
+# that the package depends on nothing but the module's content.
+EPOCH_TOUCH=198001010000.00
+EPOCH_CREATED=1980-01-01T00:00:00Z
+
+# An OpenTofu module's package is built reproducibly: a module that did not
+# change between two releases gets the digest it had, and the new release
+# only adds its tag to it, the way an unchanged image is re-tagged. A digest
+# that changes then means the module changed. What a zip takes from the
+# checkout rather than from the content is fixed for that: the order of the
+# entries (sorted), their times (EPOCH), their permissions (only the
+# executable bit, the one git tracks, survives; the rest is the umask of
+# whoever checked out) and the owner (-X). oras adds the creation time and
+# the path of the file it was given to the manifest, so both are fixed too.
+# Helm charts carry the release version in Chart.yaml and are new every time.
 publish_module() {
   set -euo pipefail
   local dir=$1 type name; type=$(basename "$(dirname "$dir")"); name=$(basename "$dir")
@@ -116,22 +131,40 @@ publish_module() {
   trap 'rc=$?; echo "ERROR: '"$type/$name"' failed (exit ${rc}) in: ${BASH_COMMAND}" >&2' ERR
   echo "Publishing $type/$name"
   rm -rf "$dir/test" "$dir/test.sh"
-  local zip="$WORK/$type-$name-$VERSION.zip" digest sbom
-  ( cd "$dir" && zip -r "$zip" . >/dev/null )
-  digest=$(retry oras push --artifact-type=application/vnd.opentofu.modulepkg --disable-path-validation \
-    --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$zip:archive/zip")
+  local pkg="$WORK/pkg/$type/$name" digest sbom
+  mkdir -p "$pkg"
+  (
+    cd "$dir"
+    chmod -R u=rwX,go=rX .
+    find . -exec env TZ=UTC touch -t "$EPOCH_TOUCH" {} +
+    find . -mindepth 1 | LC_ALL=C sort | TZ=UTC zip -X -q "$pkg/$name.zip" -@
+  )
+  # Pushed from its own directory under a name without the version: the file
+  # name given to oras is the layer's title.
+  digest=$(cd "$pkg" && retry oras push --artifact-type=application/vnd.opentofu.modulepkg \
+    --annotation "org.opencontainers.image.created=$EPOCH_CREATED" \
+    --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$name.zip:archive/zip")
   [ -n "$digest" ] || { echo "ERROR: no digest for $type/$name" >&2; return 1; }
-  python3 "$HERE/sbom.py" tofu "$dir" "$name" "$VERSION" "$type" > "$WORK/$type-$name-sbom.spdx.json"
-  sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --disable-path-validation \
-    --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$WORK/$type-$name-sbom.spdx.json:application/spdx+json")
-  [ -n "$sbom" ] || { echo "ERROR: failed to attach SBOM for $type/$name" >&2; return 1; }
+  # A package that an earlier release already published has its SBOM, which
+  # names the release the content first appeared in. Attaching another one on
+  # every release would only pile them up on the same digest.
+  sbom=$(retry oras discover --artifact-type application/vnd.syft.sbom --format json "$PRIMARY/$type/$name@$digest" \
+    | jq -r '[(.referrers // .manifests // [])[].digest] | sort | first // ""')
+  if [ -n "$sbom" ]; then
+    echo "Unchanged  $type/$name, tagged $VERSION"
+  else
+    python3 "$HERE/sbom.py" tofu "$dir" "$name" "$VERSION" "$type" > "$WORK/$type-$name-sbom.spdx.json"
+    sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --disable-path-validation \
+      --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$WORK/$type-$name-sbom.spdx.json:application/spdx+json")
+    [ -n "$sbom" ] || { echo "ERROR: failed to attach SBOM for $type/$name" >&2; return 1; }
+  fi
   mirror "$type/$name:$VERSION"
   record "$name" "$type" "$digest" "$sbom"
   echo "Published  $type/$name ($digest)"
 }
 
 export -f publish_chart publish_module record mirror label retry
-export PRIMARY VERSION WORK HERE
+export PRIMARY VERSION WORK HERE EPOCH_TOUCH EPOCH_CREATED
 export MIRRORS_STR="${MIRRORS[*]:-}"
 # Arrays do not export; workers rebuild MIRRORS from the string.
 worker() { IFS=' ' read -r -a MIRRORS <<<"$MIRRORS_STR"; export MIRRORS; "$@"; }
