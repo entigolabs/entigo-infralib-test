@@ -27,7 +27,7 @@
 #                signing needs an OIDC token (GitHub Actions provides one, a
 #                GitLab job can through id_tokens as SIGSTORE_ID_TOKEN) and
 #                a way to Sigstore's services
-# Needs helm, oras, cosign (unless OCI_SIGN=false), python3, jq, zip and
+# Needs helm, oras, cosign (unless OCI_SIGN=false), python3, jq, yq, zip and
 # rsync; login.sh next to this script does the registry logins.
 set -euo pipefail
 cd "${GITHUB_WORKSPACE:-.}"
@@ -157,6 +157,9 @@ publish_module() {
     | jq -r '[(.referrers // .manifests // [])[].digest] | sort | first // ""')
   if [ -n "$sbom" ]; then
     echo "Unchanged  $type/$name, tagged $VERSION"
+    # The index SBOM references this file by its checksum.
+    retry oras blob fetch --output "$WORK/$type-$name-sbom.spdx.json" \
+      "$PRIMARY/$type/$name@$(retry oras manifest fetch "$PRIMARY/$type/$name@$sbom" | jq -r '.layers[0].digest')"
   else
     python3 "$HERE/sbom.py" tofu "$dir" "$name" "$VERSION" "$type" > "$WORK/$type-$name-sbom.spdx.json"
     sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --disable-path-validation \
@@ -216,7 +219,7 @@ rsync -a --exclude 'charts/' --exclude 'test/' --exclude 'test.sh' --exclude 'RE
 jq -s --arg version "$VERSION" --argjson images "$IMAGES_JSON" \
   '{version: $version, modules: .} + (if ($images | length) > 0 then {images: $images} else {} end)' \
   "$WORK/entries.jsonl" > "$stage/manifest.json"
-python3 "$HERE/sbom.py" agent "$WORK/entries.jsonl" "$VERSION" > "$stage/index-sbom.spdx.json"
+SBOM_IMAGES="$IMAGES_JSON" python3 "$HERE/sbom.py" agent "$WORK/entries.jsonl" "$VERSION" "$WORK" > "$stage/index-sbom.spdx.json"
 cp "$stage/manifest.json" "$OUT/manifest.json"
 ( cd "$stage" && zip -r "index-$VERSION.zip" "${tree[@]}" manifest.json index-sbom.spdx.json >/dev/null )
 cp "$stage/index-$VERSION.zip" "$OUT/"
