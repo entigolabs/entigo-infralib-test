@@ -100,22 +100,31 @@ check_terraform() {
 # entry left behind by a version bump would otherwise install the old image
 # under the new chart, or change something that is no digest at all.
 check_images_file() {
-  local module=$1 name=$2 cloud file plain pinned changes; shift 2
+  local module=$1 name=$2 cloud file plain again pinned changes; shift 2
   for file in "" "$module"/values-*.yaml; do
     cloud=()
     case "$file" in
       */values-images.yaml|"$module/values-*.yaml") continue ;;
       ?*) cloud=(-f "$(basename "$file")") ;;
     esac
-    plain=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" "$@" .) || return 1
+    # A cloud's values may need agent inputs the static values do not have:
+    # that render says nothing about the images file. The default one rendered above.
+    plain=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" "$@" . 2>/dev/null) \
+      || { echo "static.sh: $module does not render with ${cloud[1]}, not compared" >&2; continue; }
+    again=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" "$@" .) || return 1
     pinned=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" -f values-images.yaml "$@" .) || return 1
-    # shortcut: the two renders are compared line by line, so a chart that
-    # renders random content (a generated secret) fails here; exclude those
-    # lines when such a chart gets a values-images.yaml.
-    changes=$(diff <(printf '%s\n' "$plain") <(printf '%s\n' "$pinned") | grep '^[<>] ' || true)
-    if [ "$(grep '^< ' <<<"$changes" | cut -c3-)" != "$(grep '^> ' <<<"$changes" | cut -c3- | sed -E 's/@sha256:[0-9a-f]{64}//g')" ]; then
+    # Line by line: a digest is added to a line, so the lines pair up. A line
+    # that differs between two renders of the same values is generated on
+    # every render (a secret, a certificate, a checksum of those) and is not
+    # compared. A digest the chart already ships is on both sides.
+    changes=$(paste -d $'\001' <(printf '%s\n' "$plain") <(printf '%s\n' "$again") <(printf '%s\n' "$pinned") | awk -F $'\001' '
+      NF != 3 { print "the render has a different number of lines"; exit }
+      $1 != $2 || $1 == $3 { next }
+      { stripped = $3; gsub(/@sha256:[0-9a-f]+/, "", stripped) }
+      stripped != $1 { print "< " $1; print "> " $3 }')
+    if [ -n "$changes" ]; then
       echo "static.sh: $module/values-images.yaml changes more than digests${cloud[1]:+ (with ${cloud[1]})}, regenerate it:" >&2
-      printf '%s\n' "$changes" >&2
+      printf '%s\n' "$changes" | head -20 >&2
       return 1
     fi
   done
