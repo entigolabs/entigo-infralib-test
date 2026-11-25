@@ -172,15 +172,26 @@ def enable(paths):
 
 
 def find_images(rendered):
-    images = set(re.findall(r"image:\s*['\"]?([^\s'\"]+)['\"]?", rendered))
-    # Crossplane packages (Provider, Function, Configuration spec.package)
-    # are OCI images too.
-    images |= set(re.findall(r"^\s*package:\s*['\"]?([^\s'\"]+/[^\s'\"]+)['\"]?\s*$", rendered, re.MULTILINE))
+    # {image: {the subcharts whose templates use it, None for the chart's own}}.
+    # helm template names the template of every manifest:
+    # "# Source: <chart>/templates/..." or "# Source: <chart>/charts/<subchart>/...".
+    images, owner = {}, None
+    for line in rendered.splitlines():
+        if line.startswith("# Source: "):
+            parts = line[len("# Source: "):].split("/")
+            owner = parts[2] if len(parts) > 2 and parts[1] == "charts" else None
+            continue
+        found = re.findall(r"image:\s*['\"]?([^\s'\"]+)['\"]?", line)
+        # Crossplane packages (Provider, Function, Configuration spec.package)
+        # are OCI images too.
+        found += re.findall(r"^\s*package:\s*['\"]?([^\s'\"]+/[^\s'\"]+)['\"]?\s*$", line)
+        for image in found:
+            images.setdefault(image, set()).add(owner)
     return images
 
 
 def chart_images(chart_dir, dependencies):
-    # {image: [what it was rendered with]}. A chart deploys different images
+    # {image: ([what it was rendered with], {the subcharts that use it})}. A chart deploys different images
     # depending on its values, and the SBOM lists all it can deploy: the
     # default render, one render per cloud (values-<cloud>.yaml, which the
     # agent adds on that cloud) and one with every "enabled: false" switched
@@ -206,8 +217,10 @@ def chart_images(chart_dir, dependencies):
 
     found = {}
     def add(what, images):
-        for image in images:
-            found.setdefault(image, []).append(what)
+        for image, owners in images.items():
+            renders, all_owners = found.setdefault(image, ([], set()))
+            renders.append(what)
+            all_owners |= owners
 
     renders = [("default values", [])]
     renders += [(os.path.basename(p), [p]) for p in sorted(glob.glob(f"{chart_dir}/values-*.yaml"))
@@ -237,7 +250,7 @@ def chart_images(chart_dir, dependencies):
         # that does not render is halved until its parts do; a flag that does
         # not render alone is left out.
         if not flags:
-            return set()
+            return {}
         with tempfile.NamedTemporaryFile("w", suffix=".json") as overlay:
             json.dump(enable(flags), overlay)  # JSON is YAML
             overlay.flush()
@@ -245,10 +258,14 @@ def chart_images(chart_dir, dependencies):
         if images is not None:
             return images
         if len(flags) == 1:
-            return set()
-        return optional(flags[:len(flags) // 2]) | optional(flags[len(flags) // 2:])
+            return {}
+        images = optional(flags[:len(flags) // 2])
+        for image, owners in optional(flags[len(flags) // 2:]).items():
+            images.setdefault(image, set()).update(owners)
+        return images
 
-    add("optional components enabled", optional(sorted(disabled_flags(values))) - set(found))
+    add("optional components enabled",
+        {i: o for i, o in optional(sorted(disabled_flags(values))).items() if i not in found})
     return found
 
 
@@ -277,7 +294,11 @@ def generate_helm_sbom(chart_dir, chart_name, version):
             purl=f"pkg:generic/{dep_name}@{dep_version}?download_url={dep_repo}"
         )
 
-    for image, rendered_with in sorted(chart_images(chart_dir, dependencies).items()):
+    # The SBOM is a tree: the module depends on the charts it wraps and on the
+    # images of its own templates, a wrapped chart on the images of its.
+    # A subchart is rendered under its alias, when it has one.
+    chart_ids = {d.get("alias") or d["name"]: f"SPDXRef-helm-{safe_spdx_id(d['name'])}" for d in dependencies}
+    for image, (rendered_with, owners) in sorted(chart_images(chart_dir, dependencies).items()):
         img_ref, tag, digest = split_image_ref(image)
         if not tag and not digest:
             tag = "latest"
@@ -302,14 +323,21 @@ def generate_helm_sbom(chart_dir, chart_name, version):
         purl += f"?repository_url={img_ref}"
         if tag:
             purl += f"&tag={tag}"
+        used_by = sorted({chart_ids.get(owner, root_id) for owner in owners})
         add_dependency(
-            doc, root_id, spdx_id, img_ref, tag or digest,
+            doc, used_by[0], spdx_id, img_ref, tag or digest,
             download_location=img_url,
             package_type="CONTAINER",
             purl=purl,
             comment="Rendered with: " + ", ".join(rendered_with),
             checksum=digest
         )
+        for other in used_by[1:]:
+            doc["relationships"].append({
+                "spdxElementId": other,
+                "relatedSpdxElement": spdx_id,
+                "relationshipType": "DEPENDS_ON"
+            })
 
     return doc
 
