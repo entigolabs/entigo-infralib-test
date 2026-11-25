@@ -132,9 +132,14 @@ publish_module() {
   echo "Publishing $type/$name"
   rm -rf "$dir/test" "$dir/test.sh"
   local pkg="$WORK/pkg/$type/$name" digest sbom
-  mkdir -p "$pkg"
+  mkdir -p "$pkg/tree"
+  # Packaged from a copy: permissions and times can only be set on files the
+  # publishing user owns, and a checkout mounted into a container, or made by
+  # another container of a CI job, belongs to somebody else. -L stores what a
+  # symlink points at, as zip does.
+  cp -RL "$dir/." "$pkg/tree/"
   (
-    cd "$dir"
+    cd "$pkg/tree"
     chmod -R u=rwX,go=rX .
     find . -exec env TZ=UTC touch -t "$EPOCH_TOUCH" {} +
     find . -mindepth 1 | LC_ALL=C sort | TZ=UTC zip -X -q "$pkg/$name.zip" -@
