@@ -35,7 +35,7 @@ on:
         type: string
         default: ''
       source:
-        description: optional agent source for the repository's modules that overrides release_repo, e.g. oci://ghcr.io/<org>/<repo>-release
+        description: optional agent source for the repository's modules that overrides release_repo, e.g. oci://public.ecr.aws/<org>/<repo>-release, which is read with the AWS secrets when they exist
         type: string
         default: ''
 
@@ -151,6 +151,24 @@ jobs:
         oci_config: ${{ secrets.OCI_CONFIG }}
         oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
         environments: ${{ matrix.environment }}
+    # ECR Public serves an anonymous client from a quota shared by everyone
+    # behind the same address, which a hosted runner exhausts without notice
+    # ("toomanyrequests: Data limit exceeded"). With the AWS secrets, whatever
+    # the environment's cloud, the release is read as an AWS account instead:
+    # the token is a registry password, valid for twelve hours, that the agent
+    # gets through its source configuration. It takes effect once the release
+    # under test pins a framework version that knows INFRALIB_SOURCE_PASSWORD;
+    # an older one ignores it and reads anonymously, as before.
+    - name: Log in to the release's ECR Public source
+      if: startsWith(inputs.source, 'oci://public.ecr.aws/')
+      run: |
+        set -euo pipefail
+        if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || ! command -v aws >/dev/null; then
+          echo "::notice::no AWS credentials or AWS CLI, the source is read anonymously"; exit 0
+        fi
+        token=$(aws ecr-public get-login-password --region us-east-1)
+        echo "::add-mask::${token}"
+        { echo "INFRALIB_SOURCE_USERNAME=AWS"; echo "INFRALIB_SOURCE_PASSWORD=${token}"; } >> "$GITHUB_ENV"
     - name: Provision ${{ matrix.environment }} from release ${{ needs.plan.outputs.release }}
       # The version is pinned to the release under test rather than left to the
       # agent's "latest": deterministic, and it sidesteps the agent checking a

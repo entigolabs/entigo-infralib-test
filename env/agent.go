@@ -37,6 +37,11 @@ type AgentSource struct {
 	ForceVersion bool     `json:"force_version,omitempty"`
 	Include      []string `json:"include,omitempty"`
 	Exclude      []string `json:"exclude,omitempty"`
+	// Username and Password log in to the source: a registry or a git host
+	// that does not serve it, or does not serve it reliably, to an anonymous
+	// client.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // AgentConfig is the part of a generated agent config tests read back.

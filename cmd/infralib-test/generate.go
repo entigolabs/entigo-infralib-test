@@ -85,7 +85,10 @@ func generateCommand(args []string) error {
 		Environments: environments,
 		StepPrefix:   *stepPrefix,
 		InPlace:      *inPlace,
-		Self:         env.AgentSource{URL: *source, Version: *version, ForceVersion: *forceVersion},
+		// The credentials come from the environment, not from flags: a flag
+		// would put the password on a command line and in the job log.
+		Self: env.AgentSource{URL: *source, Version: *version, ForceVersion: *forceVersion,
+			Username: os.Getenv("INFRALIB_SOURCE_USERNAME"), Password: os.Getenv("INFRALIB_SOURCE_PASSWORD")},
 	}
 	if opts.OutDir == "" {
 		opts.OutDir = config.AgentsDir()

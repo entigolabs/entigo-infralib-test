@@ -108,6 +108,10 @@ the agent as its config/<step>/include/.
 environment variables:
   INFRALIB_TEST_VERSION       image tag, normally pinned by test.sh
   INFRALIB_TEST_IMAGE_PREFIX  image name prefix (default entigolabs/entigo-infralib-test-)
+  INFRALIB_SOURCE_USERNAME, INFRALIB_SOURCE_PASSWORD
+                              credentials of the --source, written into the generated
+                              agent configuration: a registry token for an oci://
+                              source that throttles or refuses anonymous clients, say
   INFRALIB_AGENT_IMAGE        run the agent from this image instead of the agent image
                               of the environment's cloud
   INFRALIB_AGENT_IMAGE_PREFIX agent image name prefix (default entigolabs/entigo-infralib-)
@@ -465,7 +469,13 @@ generate() {
   # place, say) must fail the command, not leave it with no environments
   # and a clean exit.
   local line out
-  out=$(run_in cli -- infralib-test generate "${args[@]}") || die "generating the agent configurations failed"
+  # The credentials of --source travel in the environment, never as
+  # arguments.
+  local creds=() v
+  if [ -n "$SELF_SOURCE" ]; then
+    for v in INFRALIB_SOURCE_USERNAME INFRALIB_SOURCE_PASSWORD; do if [ -n "${!v:-}" ]; then creds+=(-e "$v"); fi; done
+  fi
+  out=$(run_in cli "${creds[@]}" -- infralib-test generate "${args[@]}") || die "generating the agent configurations failed"
   SELECTED=()
   while read -r line; do
     [ -n "$line" ] || continue

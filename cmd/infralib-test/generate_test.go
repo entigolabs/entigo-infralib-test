@@ -241,6 +241,31 @@ func TestGenerateInPlace(t *testing.T) {
 	require.True(t, agent.Sources[0].ForceVersion)
 }
 
+// The credentials of this repository's source reach the agent configuration,
+// and a source without them gets no such keys.
+func TestGenerateSourceCredentials(t *testing.T) {
+	config := fixture(t)
+	out := filepath.Join(t.TempDir(), "agents")
+	_, err := generate(generateOptions{
+		Config:       config,
+		OutDir:       out,
+		Environments: config.All(),
+		Self:         env.AgentSource{URL: "oci://registry.example/modules", Version: "v1.2.3", ForceVersion: true, Username: "AWS", Password: "token"},
+	})
+	require.NoError(t, err)
+	agent := readAgent(t, filepath.Join(out, "aws_exa", "config.yaml"))
+	require.Equal(t, "AWS", agent.Sources[0].Username)
+	require.Equal(t, "token", agent.Sources[0].Password)
+
+	out = filepath.Join(t.TempDir(), "agents")
+	_, err = generate(generateOptions{Config: config, OutDir: out, Environments: config.All(), Self: env.AgentSource{URL: "/conf"}})
+	require.NoError(t, err)
+	data, err := os.ReadFile(filepath.Join(out, "aws_exa", "config.yaml"))
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "username")
+	require.NotContains(t, string(data), "password")
+}
+
 func TestGenerateInPlaceK8s(t *testing.T) {
 	config := fixture(t)
 	out := filepath.Join(t.TempDir(), "agents")
