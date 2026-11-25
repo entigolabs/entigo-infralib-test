@@ -44,8 +44,12 @@ COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
 # The AWS CLI with a cache for `eks get-token`, first on PATH: kubectl runs
 # the plugin on every call and the Python CLI costs 1.7 CPU seconds each,
 # which starves a step's parallel argocd-apps plan on a small runner (see
-# the script). The real CLI stays where it is, at /opt/venv/bin/aws.
+# the script). The real CLI stays where it is: /opt/venv/bin/aws in an agent
+# image that still has one. An agent image without a cloud CLI gets it here,
+# as /usr/bin/aws: the nuke, the OCI publish and a repository's report
+# scripts call it.
 COPY images/aws/bin/aws /opt/infralib-test/bin/aws
+RUN [ -x /opt/venv/bin/aws ] || apk add --no-cache aws-cli
 ENV PATH=/opt/infralib-test/bin:$PATH
 # Only the Go sources feed the cache warming, so a change to scripts or docs
 # does not recompile everything.

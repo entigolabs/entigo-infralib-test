@@ -13,7 +13,13 @@
 # the real CLI untouched.
 set -euo pipefail
 
-real=${INFRALIB_TEST_AWS_CLI:-/opt/venv/bin/aws}
+# The CLI of the agent image, or the one this image installs when the agent
+# image has none.
+real=${INFRALIB_TEST_AWS_CLI:-}
+if [ -z "$real" ]; then
+  real=/usr/bin/aws
+  [ ! -x /opt/venv/bin/aws ] || real=/opt/venv/bin/aws
+fi
 
 token=false
 case " $* " in *" eks "*) for arg in "$@"; do [ "$arg" = get-token ] && token=true; done ;; esac
