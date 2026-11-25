@@ -175,10 +175,11 @@ def find_images(rendered):
     # {image: {the subcharts whose templates use it, None for the chart's own}}.
     # helm template names the template of every manifest:
     # "# Source: <chart>/templates/..." or "# Source: <chart>/charts/<subchart>/...".
-    images, owner = {}, None
+    images, owner, source, injector = {}, None, "", False
     for line in rendered.splitlines():
         if line.startswith("# Source: "):
-            parts = line[len("# Source: "):].split("/")
+            source = line[len("# Source: "):]
+            parts = source.split("/")
             owner = parts[2] if len(parts) > 2 and parts[1] == "charts" else None
             continue
         found = re.findall(r"image:\s*['\"]?([^\s'\"]+)['\"]?", line)
@@ -186,8 +187,30 @@ def find_images(rendered):
         # are OCI images too.
         found += re.findall(r"^\s*package:\s*['\"]?([^\s'\"]+/[^\s'\"]+)['\"]?\s*$", line)
         for image in found:
-            images.setdefault(image, set()).add(owner)
+            # Not images: "auto" is Istio's placeholder for the proxy its
+            # webhook injects, and its injection templates, which helm passes
+            # through in a ConfigMap, have "{{ ... }}" where the image goes.
+            if image != "auto" and re.fullmatch(r"[\w.\-/:@]+", image):
+                images.setdefault(image, set()).add(owner)
+        if line.startswith("kind: ConfigMap") and source.endswith("/istiod-injector-configmap.yaml"):
+            injector = owner
+    if injector is not False:
+        images.setdefault(istio_proxy_image(rendered), set()).add(injector)
     return images
+
+
+def istio_proxy_image(rendered):
+    # The sidecar and gateway proxy is in no manifest: istiod injects it into
+    # the pods of the mesh, composing its name from the values the injector
+    # ConfigMap carries, the way Istio's ProxyImage does.
+    configs = subprocess.run(
+        ["yq", "ea", "-o", "json", '[select(.kind == "ConfigMap" and .data.values != null) | .data.values]', "-"],
+        input=rendered, capture_output=True, text=True, check=True).stdout
+    g = json.loads(json.loads(configs)[0])["global"]
+    image = g["proxy"]["image"]
+    if "/" in image:
+        return image
+    return f"{g['hub']}/{image}:{g['tag']}" + (f"-{g['variant']}" if g.get("variant") else "")
 
 
 def chart_images(chart_dir, dependencies):
