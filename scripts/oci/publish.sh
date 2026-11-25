@@ -219,7 +219,7 @@ rsync -a --exclude 'charts/' --exclude 'test/' --exclude 'test.sh' --exclude 'RE
 jq -s --arg version "$VERSION" --argjson images "$IMAGES_JSON" \
   '{version: $version, modules: .} + (if ($images | length) > 0 then {images: $images} else {} end)' \
   "$WORK/entries.jsonl" > "$stage/manifest.json"
-python3 "$HERE/sbom.py" agent "$WORK/entries.jsonl" "$VERSION" "$WORK" > "$stage/index-sbom.spdx.json"
+SBOM_IMAGES="$IMAGES_JSON" python3 "$HERE/sbom.py" agent "$WORK/entries.jsonl" "$VERSION" "$WORK" > "$stage/index-sbom.spdx.json"
 cp "$stage/manifest.json" "$OUT/manifest.json"
 ( cd "$stage" && zip -r "index-$VERSION.zip" "${tree[@]}" manifest.json index-sbom.spdx.json >/dev/null )
 cp "$stage/index-$VERSION.zip" "$OUT/"

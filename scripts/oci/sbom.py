@@ -6,6 +6,8 @@
 #   SBOM_REGISTRY  the primary registry path packages are pushed under,
 #                  e.g. ghcr.io/entigolabs/entigo-infralib-example-release
 #   SBOM_SUPPLIER  organisation name for the supplier fields
+#   SBOM_IMAGES    optional, for the index: the release's container images
+#                  as manifest.json lists them ("images")
 #
 # Usage:
 #   Helm:     sbom.py helm <chart_dir> <chart_name> <version>
@@ -526,6 +528,37 @@ def generate_agent_sbom(entries_path, version, sbom_dir):
             "primaryPackagePurpose": "LIBRARY",
             "checksums": checksums,
             "externalRefs": ext_refs
+        })
+        doc["relationships"].append({
+            "spdxElementId": root_id,
+            "relatedSpdxElement": spdx_id,
+            "relationshipType": "CONTAINS"
+        })
+
+    # The release's own container images, the "images" of manifest.json:
+    # the digest once (a mirror holds the same image), a purl per registry.
+    for image in json.loads(os.environ.get("SBOM_IMAGES") or "[]"):
+        spdx_id = f"SPDXRef-image-{safe_spdx_id(image['name'])}"
+        registries = list(image["registries"].values())
+        doc["packages"].append({
+            "name": image["name"],
+            "SPDXID": spdx_id,
+            "versionInfo": image["tag"],
+            "supplier": f"Organization: {SUPPLIER}",
+            "downloadLocation": f"oci://{registries[0]['repository']}",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "primaryPackagePurpose": "CONTAINER",
+            "checksums": [{"algorithm": "SHA256", "checksumValue": d.split(":", 1)[1]}
+                          for d in sorted({r["digest"] for r in registries})],
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": f"pkg:oci/{image['name']}@{r['digest']}"
+                                    f"?repository_url={r['repository']}&tag={image['tag']}"
+            } for r in registries]
         })
         doc["relationships"].append({
             "spdxElementId": root_id,
