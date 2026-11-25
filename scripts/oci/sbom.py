@@ -178,13 +178,31 @@ def find_images(rendered):
     # helm template names the template of every manifest:
     # "# Source: <chart>/templates/..." or "# Source: <chart>/charts/<subchart>/...".
     images, owner, source, injector = {}, None, "", False
-    for line in rendered.splitlines():
+    # An operator starts images that are in its configuration, not in a pod
+    # spec (trivy-operator's scan jobs and node collector): a ConfigMap's
+    # "<x>.repository" with its "<x>.tag", and a key that ends in "imageRef".
+    repositories, tags = {}, {}
+
+    def configured():
+        for key in repositories.keys() & tags.keys():
+            images.setdefault(f"{repositories[key]}:{tags[key]}", set()).add(owner)
+        repositories.clear()
+        tags.clear()
+
+    for line in rendered.splitlines() + ["---"]:
+        if line == "---":
+            configured()
+            continue
         if line.startswith("# Source: "):
             source = line[len("# Source: "):]
             parts = source.split("/")
             owner = parts[2] if len(parts) > 2 and parts[1] == "charts" else None
             continue
         found = re.findall(r"image:\s*['\"]?([^\s'\"]+)['\"]?", line)
+        found += re.findall(r"^\s*[\w.]*imageRef:\s*['\"]?([^\s'\"]+)['\"]?\s*$", line)
+        part = re.match(r"\s*([\w.]+)\.(repository|tag):\s*['\"]?([^\s'\"]+)['\"]?\s*$", line)
+        if part:
+            (repositories if part.group(2) == "repository" else tags)[part.group(1)] = part.group(3)
         # Crossplane packages (Provider, Function, Configuration spec.package)
         # are OCI images too.
         found += re.findall(r"^\s*package:\s*['\"]?([^\s'\"]+/[^\s'\"]+)['\"]?\s*$", line)
