@@ -14,7 +14,10 @@
 # helm steps use the chart's values-images.yaml when there is one (the image
 # digests, a value file the agent adds to the Application) and then its
 # test/static_values.yaml when there is one, for
-# values the chart cannot default (a hostname, say). kube-score skips the
+# values the chart cannot default (a hostname, say). A values-images.yaml may
+# only add digests: the render with it must equal the render without it once
+# every "@sha256:<digest>" it added is taken off, by default and on each cloud
+# (values-<cloud>.yaml). kube-score skips the
 # checks every chart of the agent's platform fails by design (pull policy,
 # read-only root filesystem, user ids, pod disruption budgets, statefulset
 # service names) plus the ones the module's test/module.yaml lists under
@@ -92,13 +95,41 @@ check_terraform() {
   run "$TFLINT_IMAGE" "$ROOT" -- --chdir "$module" --disable-rule terraform_required_providers
 }
 
+# check_images_file MODULE NAME [helm value args]: values-images.yaml only adds
+# "@sha256:<digest>" to references the other value files already render. An
+# entry left behind by a version bump would otherwise install the old image
+# under the new chart, or change something that is no digest at all.
+check_images_file() {
+  local module=$1 name=$2 cloud file plain pinned changes; shift 2
+  for file in "" "$module"/values-*.yaml; do
+    cloud=()
+    case "$file" in
+      */values-images.yaml|"$module/values-*.yaml") continue ;;
+      ?*) cloud=(-f "$(basename "$file")") ;;
+    esac
+    plain=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" "$@" .) || return 1
+    pinned=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${cloud[@]}" -f values-images.yaml "$@" .) || return 1
+    # shortcut: the two renders are compared line by line, so a chart that
+    # renders random content (a generated secret) fails here; exclude those
+    # lines when such a chart gets a values-images.yaml.
+    changes=$(diff <(printf '%s\n' "$plain") <(printf '%s\n' "$pinned") | grep '^[<>] ' || true)
+    if [ "$(grep '^< ' <<<"$changes" | cut -c3-)" != "$(grep '^> ' <<<"$changes" | cut -c3- | sed -E 's/@sha256:[0-9a-f]{64}//g')" ]; then
+      echo "static.sh: $module/values-images.yaml changes more than digests${cloud[1]:+ (with ${cloud[1]})}, regenerate it:" >&2
+      printf '%s\n' "$changes" >&2
+      return 1
+    fi
+  done
+}
+
 check_chart() {
   local module=$1 name values=() ignore=()
   name=$(basename "$module")
   # In the order the agent applies them: the image digests are a value file of
   # the Application, the static values stand in for the inputs that override it.
+  local static=()
+  [ -f "$module/test/static_values.yaml" ] && static=(-f test/static_values.yaml)
   [ -f "$module/values-images.yaml" ] && values+=(-f values-images.yaml)
-  [ -f "$module/test/static_values.yaml" ] && values+=(-f test/static_values.yaml)
+  values+=("${static[@]}")
   # The function runs on the right of ||, where errexit is off, so each
   # failure returns by hand: a chart that does not lint or render must fail
   # here, not pass an empty render to kube-score.
@@ -107,6 +138,10 @@ check_chart() {
   log "helm template $module"
   local rendered
   rendered=$(run "$HELM_IMAGE" "$ROOT/$module" -- template "$name" --skip-tests --namespace "$name" "${values[@]}" .) || return 1
+  if [ -f "$module/values-images.yaml" ]; then
+    log "values-images.yaml of $module only adds digests"
+    check_images_file "$module" "$name" "${static[@]}" || return 1
+  fi
   log "kube-score $module"
   for check in "${KUBE_SCORE_DEFAULT_IGNORE[@]}"; do ignore+=(--ignore-test "$check"); done
   while read -r check; do [ -n "$check" ] && ignore+=(--ignore-test "$check"); done < <(kube_score_ignore "$module")
