@@ -812,6 +812,8 @@ case $COMMAND in
       if [ -n "${!v:-}" ]; then ARGS+=(-e "$v"); fi
     done
     mkdir -p .infralib-test/oci-publish
+    # The SBOMs name the framework release that generated them.
+    [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ARGS+=(-e "SBOM_TOOL_VERSION=$TAG")
     docker run "${ARGS[@]}" -e "REGISTRIES=$REGISTRIES" -e "VERSION=$RELEASE" -e OUT=/conf/.infralib-test/oci-publish \
       --entrypoint bash "$(image_for aws)" -c '/opt/infralib-test/scripts/oci/login.sh && /opt/infralib-test/scripts/oci/publish.sh'
     log "manifest.json and the index zip are in .infralib-test/oci-publish"
