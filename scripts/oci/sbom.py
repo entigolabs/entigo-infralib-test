@@ -6,6 +6,8 @@
 #   SBOM_REGISTRY  the primary registry path packages are pushed under,
 #                  e.g. ghcr.io/entigolabs/entigo-infralib-example-release
 #   SBOM_SUPPLIER  organisation name for the supplier fields
+#   SBOM_TOOL_VERSION  optional framework version (vX.Y.Z) for the creator field,
+#                  "Tool: entigo-infralib-test-sbom-vX.Y.Z"
 #   SBOM_IMAGES    optional, for the index: the release's container images
 #                  as manifest.json lists them ("images")
 #
@@ -29,6 +31,8 @@ from datetime import datetime, timezone
 
 REGISTRY = os.environ.get("SBOM_REGISTRY", "").rstrip("/")
 SUPPLIER = os.environ.get("SBOM_SUPPLIER", "Entigolabs")
+# The generator with the framework version it comes from, when the caller knows it.
+TOOL = "-".join(filter(None, ["entigo-infralib-test-sbom", os.environ.get("SBOM_TOOL_VERSION")]))
 
 
 def make_document(name, version, namespace_suffix):
@@ -41,7 +45,7 @@ def make_document(name, version, namespace_suffix):
         "documentNamespace": f"https://{REGISTRY}/sbom/{namespace_suffix}/{version}/{uuid.uuid4()}",
         "creationInfo": {
             "licenseListVersion": "3.28",
-            "creators": [f"Organization: {SUPPLIER}", "Tool: entigo-infralib-test-sbom"],
+            "creators": [f"Organization: {SUPPLIER}", f"Tool: {TOOL}"],
             "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         },
         "packages": [],

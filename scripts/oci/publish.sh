@@ -13,6 +13,8 @@
 #                rest receive byte-identical copies (oras cp)
 #   VERSION      bare semver of the release
 #   SUPPLIER     organisation for the SBOMs
+#   SBOM_TOOL_VERSION  optional framework version (vX.Y.Z) the SBOMs name their
+#                generator with; the oci-publish action and test.sh publish set it
 #   OUT          directory for manifest.json and the index zip (release assets)
 #   OCI_IMAGES   optional JSON array of the container images that belong to
 #                the release, written to manifest.json as "images" so that the
@@ -38,7 +40,7 @@ source "$HERE/retry.sh"
 IFS=, read -r -a ALL <<<"${REGISTRIES}"
 PRIMARY="${ALL[0]%/}"
 MIRRORS=("${ALL[@]:1}")
-export SBOM_REGISTRY="$PRIMARY" SBOM_SUPPLIER="${SUPPLIER:-Entigolabs}"
+export SBOM_REGISTRY="$PRIMARY" SBOM_SUPPLIER="${SUPPLIER:-Entigolabs}" SBOM_TOOL_VERSION="${SBOM_TOOL_VERSION:-}"
 WORK=$(mktemp -d)
 mkdir -p "$WORK/entries" "$WORK/charts" "$OUT"
 

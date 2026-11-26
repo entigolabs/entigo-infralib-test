@@ -47,4 +47,8 @@ runs:
         OCI_IMAGES: ${{ inputs.images }}
         SUPPLIER: ${{ inputs.supplier }}
         OUT: ${{ inputs.out }}
-      run: ${{ github.action_path }}/../../../scripts/oci/publish.sh
+      # The SBOMs name the framework release that generated them: the action
+      # runs from a branch, so that is the newest release, the nearest tag.
+      run: |
+        export SBOM_TOOL_VERSION="$(GH_TOKEN="${{ github.token }}" gh api repos/entigolabs/entigo-infralib-test/releases/latest --jq .tag_name || true)"
+        ${{ github.action_path }}/../../../scripts/oci/publish.sh
