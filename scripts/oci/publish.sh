@@ -103,8 +103,10 @@ publish_chart() {
   grep '^WARN' "$log" >&2 || true
   digest=$(awk '/Digest:/ {print $2}' "$log" | tail -n1)
   [ -n "$digest" ] || { echo "ERROR: no digest for k8s/$name:" >&2; sed "s/^/  [$name] /" "$log" >&2; return 1; }
-  sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --disable-path-validation \
-    --format go-template --template '{{.digest}}' "$PRIMARY/k8s/$name:$VERSION" "$WORK/$name-sbom.spdx.json:application/spdx+json")
+  # From inside $WORK: the path given here becomes the file's name in the
+  # registry, and oras pull refuses an absolute one.
+  sbom=$(cd "$WORK" && retry oras attach --artifact-type application/vnd.syft.sbom \
+    --format go-template --template '{{.digest}}' "$PRIMARY/k8s/$name:$VERSION" "$name-sbom.spdx.json:application/spdx+json")
   [ -n "$sbom" ] || { echo "ERROR: failed to attach SBOM for k8s/$name" >&2; return 1; }
   mirror "k8s/$name:$VERSION"
   record "$name" k8s "$digest" "$sbom"
@@ -164,8 +166,8 @@ publish_module() {
       "$PRIMARY/$type/$name@$(retry oras manifest fetch "$PRIMARY/$type/$name@$sbom" | jq -r '.layers[0].digest')"
   else
     python3 "$HERE/sbom.py" tofu "$dir" "$name" "$VERSION" "$type" > "$WORK/$type-$name-sbom.spdx.json"
-    sbom=$(retry oras attach --artifact-type application/vnd.syft.sbom --disable-path-validation \
-      --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$WORK/$type-$name-sbom.spdx.json:application/spdx+json")
+    sbom=$(cd "$WORK" && retry oras attach --artifact-type application/vnd.syft.sbom \
+      --format go-template --template '{{.digest}}' "$PRIMARY/$type/$name:$VERSION" "$type-$name-sbom.spdx.json:application/spdx+json")
     [ -n "$sbom" ] || { echo "ERROR: failed to attach SBOM for $type/$name" >&2; return 1; }
   fi
   mirror "$type/$name:$VERSION"
