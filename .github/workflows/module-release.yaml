@@ -53,6 +53,10 @@ on:
         description: optional JSON array of the container images that belong to the release, with their digests per registry, written to the index's manifest.json as "images"; the caller tags and signs them, the format is in scripts/oci/publish.sh
         type: string
         default: ''
+      oci_supplier:
+        description: optional legal name of the organisation that supplies the release, for the supplier and creator fields of the SBOMs; the repository owner when empty
+        type: string
+        default: ''
       release_repo:
         description: optional git URL (https://github.com/<org>/<repo>) to publish the modules to, without their tests
         type: string
@@ -321,6 +325,7 @@ jobs:
         registries: ${{ inputs.oci_registries }}
         version: ${{ steps.version.outputs.oci }}
         images: ${{ inputs.oci_images }}
+        supplier: ${{ inputs.oci_supplier || github.repository_owner }}
         out: ${{ runner.temp }}/oci-publish
     - name: Attach manifest and index to the release
       if: steps.version.outputs.needed == 'true' && inputs.oci_registries != ''
