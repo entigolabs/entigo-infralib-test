@@ -23,6 +23,7 @@
 # A dispatch of this workflow rebuilds the <sha> images of main, but the
 # Release workflow refuses a commit that is released already, so a new base
 # is picked up and released with a commit on main, such as this note.
+# Last done for the agent images that carry shackle v0.1.10.
 #
 # A pull request opened by Dependabot proves that every image still builds on
 # both architectures and stops there: no digest is pushed and no manifest job
