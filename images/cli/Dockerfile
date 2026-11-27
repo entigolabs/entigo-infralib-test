@@ -21,7 +21,7 @@ COPY --from=build /out/infralib-test /usr/local/bin/infralib-test
 # shackle (https://github.com/entigolabs/shackle) writes the kubeconfig of the
 # environments' clusters for every cloud (the kubeconfig command). The agent
 # images carry the same binary for the tokens that kubeconfig asks for.
-COPY --from=ghcr.io/entigolabs/shackle:v0.1.9@sha256:563af2c0b76422c6ccacb91c7466d1e80eec0c9d8b880f7bb030786d4f1226ff /usr/local/bin/shackle /usr/local/bin/shackle
+COPY --from=ghcr.io/entigolabs/shackle:v0.1.10@sha256:83c51053357bf1fcd3d31489c04197292cbe27eebc2c36e0fb665addb0a7cf05 /usr/local/bin/shackle /usr/local/bin/shackle
 COPY scripts/ /opt/infralib-test/scripts/
 COPY templates/ /opt/infralib-test/templates/
 USER 1000
